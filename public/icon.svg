@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="100" fill="#2563eb"/>
+  <path d="M256 120L120 240H180V380H230V300H282V380H332V240H392L256 120Z" fill="white"/>
+  <text x="256" y="450" font-family="Arial, sans-serif" font-size="60" fill="white" text-anchor="middle" font-weight="bold">DIP</text>
+</svg>

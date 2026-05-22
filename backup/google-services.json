@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "170450822577",
+    "firebase_url": "https://siva-41d12-default-rtdb.firebaseio.com",
+    "project_id": "siva-41d12",
+    "storage_bucket": "siva-41d12.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:170450822577:android:39f1694e3e89dbc82cc990",
+        "android_client_info": {
+          "package_name": "com.dip.dealer"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBAmgcjomR9baoZvy5OvwdFtFY8zOgvAsQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

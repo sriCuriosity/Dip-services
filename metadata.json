@@ -1,0 +1,5 @@
+{
+  "name": "DIP - Doorstep Service Provider",
+  "description": "A multi-sided marketplace connecting customers with local service professionals for home services.",
+  "requestFramePermissions": ["geolocation", "camera", "notifications"]
+}

@@ -1,0 +1,17 @@
+{
+  "userId": "cust_998877",
+  "userName": "Sri Nithilan",
+  "workerId": "work_112233",
+  "trade": "Electrician",
+  "rate": 500,
+  "status": "pending",
+  "issue": "Fan motor not working",
+  "workAddress": "No. 123, Anna Salai, Chennai",
+  "preferredTime": "10:30 AM",
+  "bookingDate": "2026-05-25",
+  "duration": "Quick Visit",
+  "sourceLat": 13.0827,
+  "sourceLng": 80.2707,
+  "commissionAmount": 15,
+  "platformFee": 15
+}
