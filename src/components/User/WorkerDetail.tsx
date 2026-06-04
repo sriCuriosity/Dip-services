@@ -7,7 +7,7 @@ import { AbstractGradientBackground } from '../Common/AbstractGradientBackground
 import { formatCurrency, generateWhatsAppLink, apiFetch, cn, calculatePlatformFeePercentage } from '@/src/lib/utils';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { useLanguage } from '@/src/contexts/LanguageContext';
-import { ref, push, set, get, onValue, update } from 'firebase/database';
+import { ref, push, set } from 'firebase/database';
 import { db } from '@/src/lib/firebase';
 import { motion, AnimatePresence } from 'framer-motion';
 import { FCMService } from '@/src/lib/fcmService';
@@ -27,33 +27,15 @@ export const WorkerDetail: React.FC<WorkerDetailProps> = ({ worker, onBack, hasO
   const [isBooking, setIsBooking] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // Scroll to top on mount
   React.useEffect(() => {
     window.scrollTo(0, 0);
-
-    const handlePopState = () => {
-      if (!window.history.state?.preview) {
-        setPreviewImage(null);
-      }
-      if (!window.history.state?.booking) {
-        setIsBooking(false);
-      }
-    };
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
   const handleSetPreviewImage = (image: { src: string, alt: string } | null) => {
-    if (image) {
-      window.history.pushState({ preview: true }, '');
-    }
     setPreviewImage(image);
   };
 
   const handleOpenBooking = (isOpen: boolean) => {
-    if (isOpen) {
-      window.history.pushState({ booking: true }, '');
-    }
     setIsBooking(isOpen);
   };
   const [previewImage, setPreviewImage] = useState<{ src: string, alt: string } | null>(null);
@@ -77,7 +59,7 @@ export const WorkerDetail: React.FC<WorkerDetailProps> = ({ worker, onBack, hasO
     destLng: null as number | null
   });
 
-  const [activePicker, setActivePicker] = useState<'source' | 'dest' | null>(null);
+  const [activePicker, setActivePicker] = useState<'source' | 'dest' | 'pickup' | null>(null);
 
   const getTradeRates = (trade: string, rates: any) => {
     if (['Auto', 'Tempo', 'Van', 'Car'].includes(trade)) {
@@ -162,6 +144,13 @@ export const WorkerDetail: React.FC<WorkerDetailProps> = ({ worker, onBack, hasO
     setLoading(true);
     try {
       const isTransport = ['Auto', 'Tempo', 'Van', 'Car'].includes(selectedTradeForBooking);
+
+      if (isTransport && (!profile?.latitude || !profile?.longitude)) {
+        alert(t("Please turn on your location to book instant rides."));
+        setLoading(false);
+        return;
+      }
+
       const ordersRef = ref(db, 'orders');
       const newOrderRef = push(ordersRef);
       
@@ -216,53 +205,7 @@ export const WorkerDetail: React.FC<WorkerDetailProps> = ({ worker, onBack, hasO
 
       let notifiedCount = 0;
 
-      // Handle Notifications
-      if (isTransport && selectedTradeForBooking === 'Auto' && bookingDetails.sourceLat && bookingDetails.sourceLng) {
-        // Find all nearby auto workers and broadcast
-        const workersRef = ref(db, 'workers');
-        const workersSnap = await get(workersRef);
-        const workersData = workersSnap.val() || {};
-        const workersToNotify: { token: string; uid: string }[] = [];
-        const now = Date.now();
-        const MAX_FRESHNESS = 5 * 60 * 1000; // 5 minutes - strict live location check
-
-        Object.entries(workersData).forEach(([uid, val]: [string, any]) => {
-          // Only ping workers who are actively marked as available
-          if (val.isAvailable && val.trades && val.trades['Auto'] && val.fcmToken) {
-            const wLat = val.trades['Auto'].latitude || val.latitude;
-            const wLng = val.trades['Auto'].longitude || val.longitude;
-            const lastUpdate = val.lastLocationUpdate || 0;
-            const isFresh = (now - lastUpdate) <= MAX_FRESHNESS;
-            
-            // Only ping if location is fresh (updated within 5 mins) and present
-            if (isFresh && wLat && wLng) {
-              const distance = getDistance(bookingDetails.sourceLat!, bookingDetails.sourceLng!, wLat, wLng);
-              if (distance <= 10) { // 10km radius
-                workersToNotify.push({ token: val.fcmToken, uid });
-              }
-            }
-          }
-        });
-
-        // Store informed workers in the order
-        const notifiedUids = workersToNotify.map(w => w.uid);
-        await update(newOrderRef, { broadcastedTo: notifiedUids });
-
-        const uniqueTokens = Array.from(new Set(workersToNotify.map(w => w.token)));
-        notifiedCount = uniqueTokens.length;
-        const notificationTitle = `Nearby Auto Request! 🛺 / அருகில் ஆட்டோ தேவை! 🛺`;
-        const notificationBody = `Start: ${bookingDetails.pickupPoint}\nEnd: ${bookingDetails.workAddress}\nPickup Details: ${bookingDetails.issue}\nDate: ${bookingDetails.date}`;
-
-        // Send to all unique tokens
-        await Promise.all(uniqueTokens.map(token => 
-          FCMService.sendPushNotification(token, notificationTitle, notificationBody, {
-            orderId: newOrderRef.key || '',
-            path: '/worker',
-            type: 'booking_request'
-          })
-        ));
-      } else if (worker.fcmToken) {
-        // Regular direct notification
+      if (worker.fcmToken) {
         notifiedCount = 1;
         let notificationBody = `Job: ${selectedTradeForBooking}\nAmount: ₹${finalOfferedAmount}\nIssue: ${bookingDetails.issue}\nPlace: ${bookingDetails.workAddress}`;
         
@@ -294,7 +237,7 @@ export const WorkerDetail: React.FC<WorkerDetailProps> = ({ worker, onBack, hasO
         );
       }
 
-      alert(`${t('Booked')} ${selectedTradeForBooking === 'Auto' ? 'Nearby Auto' : worker.name}! (${t('Notification sent to')} ${notifiedCount} ${t('available workers')})`);
+      alert(`${t('Booked')} ${worker.name}! (${t('Notification sent to')} ${notifiedCount} ${t('worker')})`);
       handleOpenBooking(false);
       navigate('/orders');
     } catch (error) {
@@ -356,12 +299,22 @@ export const WorkerDetail: React.FC<WorkerDetailProps> = ({ worker, onBack, hasO
           </div>
 
           {/* Verification Circle */}
-          <div className={cn(
-             "w-24 h-24 rounded-full shadow-[0_8px_25px_-4px_rgba(0,0,0,0.15)] flex flex-col items-center justify-center border-4 transform scale-110",
-             worker.verificationStatus === 'approved' ? "bg-emerald-500 border-white text-white" : 
-             worker.verificationStatus === 'rejected' ? "bg-red-500 border-white text-white" : 
-             "bg-amber-500 border-white text-white"
-          )}>
+          <div
+            className={cn(
+              "w-24 h-24 rounded-full shadow-[0_8px_25px_-4px_rgba(0,0,0,0.15)] flex flex-col items-center justify-center border-4 transform scale-110",
+              worker.verificationStatus === 'approved' ? "bg-emerald-500 border-white text-white" : 
+              worker.verificationStatus === 'rejected' ? "bg-red-500 border-white text-white" : 
+              "bg-amber-500 border-white text-white"
+            )}
+            style={{
+              backgroundColor:
+                worker.verificationStatus === 'approved' ? '#10b981' :
+                worker.verificationStatus === 'rejected' ? '#ef4444' :
+                '#f59e0b',
+              color: '#ffffff',
+              borderColor: '#ffffff'
+            }}
+          >
             {worker.verificationStatus === 'approved' ? <ShieldCheck size={24} /> : 
              worker.verificationStatus === 'rejected' ? <ShieldX size={24} /> : 
              <ShieldAlert size={24} />}
@@ -393,10 +346,16 @@ export const WorkerDetail: React.FC<WorkerDetailProps> = ({ worker, onBack, hasO
 
             {/* Row 2: Worker Available/Busy */}
             <div className="flex">
-              <div className={cn(
-                "flex items-center gap-2 px-4 py-1.5 rounded-full font-bold text-[10px] uppercase tracking-widest",
-                worker.isAvailable ? "bg-emerald-500 text-white shadow-[0_4px_12px_rgba(16,185,129,0.3)]" : "bg-red-500 text-white shadow-[0_4px_12px_rgba(239,68,68,0.3)]"
-              )}>
+              <div
+                className={cn(
+                  "flex items-center gap-2 px-4 py-1.5 rounded-full font-bold text-[10px] uppercase tracking-widest",
+                  worker.isAvailable ? "bg-emerald-500 text-white shadow-[0_4px_12px_rgba(16,185,129,0.3)]" : "bg-red-500 text-white shadow-[0_4px_12px_rgba(239,68,68,0.3)]"
+                )}
+                style={{
+                  backgroundColor: worker.isAvailable ? '#10b981' : '#ef4444',
+                  color: '#ffffff'
+                }}
+              >
                 <span className={cn("w-2 h-2 rounded-full", worker.isAvailable ? "bg-white animate-pulse" : "bg-white/50")} />
                 {worker.isAvailable ? t('Worker Available') : t('Worker Busy')}
               </div>
@@ -524,7 +483,7 @@ export const WorkerDetail: React.FC<WorkerDetailProps> = ({ worker, onBack, hasO
             >
               <div className="flex justify-between items-center mb-8 border-b border-slate-50 pb-4">
                 <h2 className="text-xl font-bold text-slate-900 tracking-tight">{t('Book Service')}</h2>
-                <button onClick={() => window.history.back()} className="w-10 h-10 bg-slate-100 rounded-2xl flex items-center justify-center text-slate-400">
+                <button type="button" onClick={() => handleOpenBooking(false)} className="w-10 h-10 bg-slate-100 rounded-2xl flex items-center justify-center text-slate-400">
                   <X size={20} />
                 </button>
               </div>
@@ -894,7 +853,7 @@ export const WorkerDetail: React.FC<WorkerDetailProps> = ({ worker, onBack, hasO
         src={previewImage?.src || ''}
         alt={previewImage?.alt}
         isOpen={!!previewImage}
-        onClose={() => window.history.back()}
+        onClose={() => setPreviewImage(null)}
       />
 
       <LocationPicker

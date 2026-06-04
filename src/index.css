@@ -34,7 +34,7 @@
 
 @layer components {
   .mobile-container {
-    @apply max-w-md mx-auto min-h-screen bg-slate-50 shadow-xl relative flex flex-col;
+    @apply max-w-md mx-auto min-h-screen bg-white shadow-xl relative flex flex-col;
   }
   
   .btn-primary {

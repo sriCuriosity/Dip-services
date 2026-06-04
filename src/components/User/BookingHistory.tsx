@@ -9,7 +9,7 @@ import { RateWorkerModal } from '../Common/RateWorkerModal';
 import { ClipboardList, Clock, CheckCircle2, XCircle, ChevronRight, Calendar, Star, ArrowLeft, AlertCircle, MapPin } from 'lucide-react';
 import { formatCurrency, formatDate, formatDateTime, cn } from '@/src/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useNavigate } from 'react-router-dom';
+import { useLayoutOutlet } from '@/src/contexts/LayoutOutletContext';
 
 const FILTER_ORDER = ['All', 'Completed', 'Rejected'] as const;
 type FilterType = typeof FILTER_ORDER[number];
@@ -17,7 +17,7 @@ type FilterType = typeof FILTER_ORDER[number];
 export const BookingHistory: React.FC = () => {
   const { profile } = useAuth();
   const { t } = useLanguage();
-  const navigate = useNavigate();
+  const { navigateTo } = useLayoutOutlet();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<FilterType>('All');
@@ -128,7 +128,7 @@ export const BookingHistory: React.FC = () => {
         <div className="absolute inset-0 bg-gradient-to-t from-[#2d3446] via-transparent to-transparent opacity-60" />
 
         <div className="relative z-10">
-          <button onClick={() => navigate('/profile')} className="mb-4 w-10 h-10 bg-white/10 rounded-full flex items-center justify-center text-white backdrop-blur-md border border-white/20">
+          <button type="button" onClick={() => navigateTo('/profile')} className="mb-4 w-10 h-10 bg-white/10 rounded-full flex items-center justify-center text-white backdrop-blur-md border border-white/20">
             <ArrowLeft size={20} />
           </button>
           <h1 className="text-2xl font-black text-white tracking-tight uppercase">{t('Booking History')}</h1>

@@ -10,6 +10,7 @@ import { cn } from '@/src/lib/utils';
 import { fileToBase64, compressImage } from '@/src/lib/imageUtils';
 import { motion, AnimatePresence } from 'framer-motion';
 import { MapPicker } from '../Common/MapPicker';
+import { CITIES_LIST } from '../../lib/citiesData';
 
 const IndianRupee = ({ size, className }: { size: number, className?: string }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -488,12 +489,16 @@ export const WorkerProfileSetup: React.FC<{ onComplete?: () => void, onClose?: (
               <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-emerald-400" size={18} />
               <input
                 type="text"
+                list="worker-cities-list"
                 placeholder={t('e.g. Mumbai')}
                 className="input-field pl-12 border-emerald-100 focus:border-emerald-500 focus:ring-emerald-500"
                 value={city}
                 onChange={(e) => setCity(e.target.value)}
                 required
               />
+              <datalist id="worker-cities-list">
+                {CITIES_LIST.map(c => <option key={c} value={c}>{c}</option>)}
+              </datalist>
             </div>
           </div>
 

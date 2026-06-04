@@ -1,5 +1,7 @@
-include ':app'
-include ':capacitor-cordova-android-plugins'
-project(':capacitor-cordova-android-plugins').projectDir = new File('./capacitor-cordova-android-plugins/')
 
+// Include the Android app module
+include ':app'
+project(':app').projectDir = new File('app')
+
+// Load Capacitor plugin includes (generated)
 apply from: 'capacitor.settings.gradle'

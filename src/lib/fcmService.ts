@@ -12,20 +12,29 @@ export class FCMService {
   private static STORAGE_KEY = 'dip_pending_notif_target';
   private static retryTimer: ReturnType<typeof setInterval> | null = null;
 
+  /** Stop notification redirect loop (was blocking manual tab taps). */
+  static cancelPendingRedirect() {
+    if (this.retryTimer) {
+      clearInterval(this.retryTimer);
+      this.retryTimer = null;
+    }
+    try {
+      localStorage.removeItem(this.STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
+
   static setNavigateHandler(handler: (path: string) => void) {
     if (!handler) return;
     this.navigateHandler = handler;
-    // Immediately check for any pending path from a cold start
     this.checkAndRedirect();
   }
 
-  // Attempt to navigate to the pending path.
-  // Keeps retrying until navigation is confirmed by URL match.
   static checkAndRedirect() {
     const target = localStorage.getItem(this.STORAGE_KEY);
     if (!target || !this.navigateHandler) return;
 
-    // Stop any previous retry timer
     if (this.retryTimer) {
       clearInterval(this.retryTimer);
       this.retryTimer = null;
@@ -33,35 +42,28 @@ export class FCMService {
 
     const tryNavigate = () => {
       if (!this.navigateHandler) return;
-      console.log('FCMService: Attempting navigation to', target);
       this.navigateHandler(target);
     };
 
-    // Attempt immediately
     tryNavigate();
 
-    // Then retry every 400ms for up to 8 seconds in case React Router isn't ready yet
     let attempts = 0;
     this.retryTimer = setInterval(() => {
       attempts++;
-      // Check if we've arrived at the target
-      if (window.location.pathname === target || window.location.hash.includes(target)) {
-        console.log('FCMService: Navigation confirmed, clearing pending path.');
+      const hashPath = window.location.hash.replace(/^#/, '') || '/';
+      const currentPath = hashPath.startsWith('/') ? hashPath.split('?')[0] : `/${hashPath.split('?')[0]}`;
+      if (currentPath === target || window.location.hash.includes(target)) {
         localStorage.removeItem(this.STORAGE_KEY);
-        clearInterval(this.retryTimer!);
-        this.retryTimer = null;
+        this.cancelPendingRedirect();
         return;
       }
-      if (attempts >= 20) {
-        // Give up after ~8 seconds but still clear to avoid infinite loop
-        console.warn('FCMService: Navigation timed out, clearing pending path.');
+      if (attempts >= 3) {
         localStorage.removeItem(this.STORAGE_KEY);
-        clearInterval(this.retryTimer!);
-        this.retryTimer = null;
+        this.cancelPendingRedirect();
         return;
       }
       tryNavigate();
-    }, 400);
+    }, 600);
   }
 
   static async createNotificationChannel() {
@@ -210,8 +212,12 @@ export class FCMService {
     };
 
     try {
-      const response = await fetch(WEBHOOK_URL, {
+      await fetch(WEBHOOK_URL, {
         method: 'POST',
+        mode: 'no-cors',
+        headers: {
+          'Content-Type': 'text/plain;charset=utf-8',
+        },
         body: JSON.stringify({
           token: targetToken,
           title: title,
@@ -220,9 +226,8 @@ export class FCMService {
         }),
       });
 
-      const result = await response.json();
-      console.log('Google Script Relay result:', result);
-      return result;
+      console.log('Google Script Relay request sent successfully.');
+      return { success: true };
     } catch (err) {
       console.error('Error sending through Google Relay:', err);
     }

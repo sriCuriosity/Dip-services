@@ -9,6 +9,7 @@ import { cn } from '@/src/lib/utils';
 import { motion } from 'framer-motion';
 import { compressImage, fileToBase64 } from '@/src/lib/imageUtils';
 import { useNavigate } from 'react-router-dom';
+import { CITIES_LIST } from '@/src/lib/citiesData';
 
 export const ShopProfileSetup: React.FC<{ onComplete?: () => void, onClose?: () => void }> = ({ onComplete, onClose }) => {
   const { profile } = useAuth();
@@ -248,15 +249,18 @@ export const ShopProfileSetup: React.FC<{ onComplete?: () => void, onClose?: () 
               <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-emerald-400" size={18} />
               <input
                 type="text"
-                placeholder={t('e.g. Mumbai')}
-                className="input-field pl-12 border-emerald-100 focus:border-emerald-500 focus:ring-emerald-500"
+                list="shop-cities-list"
                 value={city}
                 onChange={(e) => setCity(e.target.value)}
+                className="input-field pl-12 border-emerald-100 focus:border-emerald-500 focus:ring-emerald-500"
+                placeholder={t('Enter City')}
                 required
               />
+              <datalist id="shop-cities-list">
+                {CITIES_LIST.map(c => <option key={c} value={c}>{c}</option>)}
+              </datalist>
             </div>
           </div>
-
           <div>
             <label className={cn("text-xs font-bold text-emerald-600 mb-2 block", language === 'en' ? "uppercase" : "")}>{t('Landmark')}</label>
             <div className="relative">

@@ -71,7 +71,8 @@ export const GlobalWorkerTracker: React.FC = () => {
         const cooldownMs = isCritical ? 60000 : 300000; // 1 min for critical, 5 mins for others
         
         // Show immediately if we haven't reached the cooldown from the previous DISMISSAL
-        if (!showGpsAlert && (now - lastGpsAlertRef.current > cooldownMs)) { 
+        // Ignore 'timeout' because it happens frequently on mobile even when GPS is ON
+        if (!showGpsAlert && errorType !== 'timeout' && (now - lastGpsAlertRef.current > cooldownMs)) { 
           setGpsErrorType(errorType);
           setShowGpsAlert(true);
         }

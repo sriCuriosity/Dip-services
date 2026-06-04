@@ -1,7 +1,8 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 import { LanguageProvider } from './contexts/LanguageContext';
 import { AuthGuard } from './components/Auth/AuthGuard';
+import { RoleGuard } from './components/Auth/RoleGuard';
 import { SplashScreen } from './components/Common/SplashScreen';
 import { Login } from './components/Auth/Login';
 import { MobileLayout } from './components/Layout/MobileLayout';
@@ -41,7 +42,9 @@ function FCMNavigationGate() {
   useEffect(() => {
     FCMService.setNavigateHandler((path) => {
       // Use fresh window location to avoid stale closure issues during rapid navigation
-      if (window.location.pathname !== path && !window.location.hash.includes(path)) {
+      const hashPath = (window.location.hash.replace(/^#/, '') || '/').split('?')[0];
+      const currentPath = hashPath.startsWith('/') ? hashPath : `/${hashPath}`;
+      if (currentPath !== path && !window.location.hash.includes(path)) {
         console.log('FCMNavigationGate: Navigating to', path);
         navigate(path);
       }
@@ -66,7 +69,7 @@ export default function App() {
     <ThemeProvider>
       <AuthProvider>
         <LanguageProvider>
-          <BrowserRouter>
+          <HashRouter>
             {/* Splash overlaid on top — everything else always mounted */}
             <AnimatePresence>
               {showSplash && (
@@ -91,16 +94,16 @@ export default function App() {
                 <Route path="/rentals" element={<RentalsList />} />
 
                 {/* Worker Routes */}
-                <Route path="/worker" element={<AuthGuard allowedRoles={['worker']}><WorkerDashboard /></AuthGuard>} />
-                <Route path="/worker/jobs" element={<AuthGuard allowedRoles={['worker']}><JobRequest /></AuthGuard>} />
-                <Route path="/worker/profile" element={<AuthGuard allowedRoles={['worker']}><WorkerProfileSetup /></AuthGuard>} />
-                <Route path="/worker/profile/:trade" element={<AuthGuard allowedRoles={['worker']}><WorkerProfileSetup /></AuthGuard>} />
-                <Route path="/worker/shop-profile" element={<AuthGuard allowedRoles={['worker']}><ShopProfileSetup /></AuthGuard>} />
-                <Route path="/worker/earnings" element={<AuthGuard allowedRoles={['worker']}><Earnings /></AuthGuard>} />
-                <Route path="/worker/history" element={<AuthGuard allowedRoles={['worker']}><JobHistory /></AuthGuard>} />
+                <Route path="/worker" element={<RoleGuard allowedRoles={['worker']}><WorkerDashboard /></RoleGuard>} />
+                <Route path="/worker/jobs" element={<RoleGuard allowedRoles={['worker']}><JobRequest /></RoleGuard>} />
+                <Route path="/worker/profile" element={<RoleGuard allowedRoles={['worker']}><WorkerProfileSetup /></RoleGuard>} />
+                <Route path="/worker/profile/:trade" element={<RoleGuard allowedRoles={['worker']}><WorkerProfileSetup /></RoleGuard>} />
+                <Route path="/worker/shop-profile" element={<RoleGuard allowedRoles={['worker']}><ShopProfileSetup /></RoleGuard>} />
+                <Route path="/worker/earnings" element={<RoleGuard allowedRoles={['worker']}><Earnings /></RoleGuard>} />
+                <Route path="/worker/history" element={<RoleGuard allowedRoles={['worker']}><JobHistory /></RoleGuard>} />
 
                 {/* Admin Routes */}
-                <Route path="/admin" element={<AuthGuard allowedRoles={['admin']}><AdminDashboard /></AuthGuard>} />
+                <Route path="/admin" element={<RoleGuard allowedRoles={['admin']}><AdminDashboard /></RoleGuard>} />
 
                 {/* Shared Routes */}
                 <Route path="/profile" element={<Profile />} />
@@ -113,7 +116,7 @@ export default function App() {
 
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
-          </BrowserRouter>
+          </HashRouter>
         </LanguageProvider>
       </AuthProvider>
     </ThemeProvider>

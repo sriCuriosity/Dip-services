@@ -31,109 +31,100 @@ export const OrderHistory: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
 
-  useEffect(() => {
-    const handlePopState = () => {
-      // Restore selected order from state if present
-      if (window.history.state?.modal === 'order-detail' && window.history.state?.order) {
-        setSelectedOrder(window.history.state.order);
-      } else if (!window.history.state?.modal || window.history.state?.modal !== 'order-detail') {
-        setSelectedOrder(null);
-      }
-
-      // Handle sub-modals
-      setIsRateModalOpen(window.history.state?.modal === 'rate');
-      setIsRejectionModalOpen(window.history.state?.modal === 'rejection');
-    };
-
-    // Check initial state on mount to restore detail view
-    if (window.history.state?.modal === 'order-detail' && window.history.state?.order) {
-      setSelectedOrder(window.history.state.order);
-    }
-    if (window.history.state?.modal === 'rate') setIsRateModalOpen(true);
-    if (window.history.state?.modal === 'rejection') setIsRejectionModalOpen(true);
-
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
-  }, []);
-
   const handleSetSelectedOrder = (order: Order | null) => {
-    if (order) {
-      window.history.pushState({ modal: 'order-detail', order: order }, '');
-    }
     setSelectedOrder(order);
   };
 
   const handleSetIsRateModalOpen = (isOpen: boolean) => {
-    if (isOpen) {
-      window.history.pushState({ modal: 'rate' }, '');
-    }
     setIsRateModalOpen(isOpen);
   };
 
   const handleSetIsRejectionModalOpen = (isOpen: boolean) => {
-    if (isOpen) {
-      window.history.pushState({ modal: 'rejection' }, '');
-    }
     setIsRejectionModalOpen(isOpen);
   };
   const [filter, setFilter] = useState<Order['status'] | 'all'>('all');
   const FILTER_ORDER = ['all', 'pending', 'accepted'] as const;
 
-  const handleSwipe = (direction: 'left' | 'right') => {
-    const currentIndex = FILTER_ORDER.indexOf(filter as any);
-    if (direction === 'left') { // Right to Left swipe (Next)
-      if (currentIndex < FILTER_ORDER.length - 1) {
-        setFilter(FILTER_ORDER[currentIndex + 1]);
-      }
-    } else { // Left to Right swipe (Prev)
-      if (currentIndex > 0) {
-        setFilter(FILTER_ORDER[currentIndex - 1]);
-      }
+  const processOrdersSnapshot = (data: Record<string, unknown> | null) => {
+    if (!data) {
+      setOrders([]);
+      return;
     }
+    const allOrders = Object.entries(data).map(([key, value]) => ({
+      ...(value as object),
+      id: key,
+    })) as Order[];
+
+    const userOrders = allOrders.filter((order) => {
+      const status = order.status?.toLowerCase();
+      return status === 'pending' || status === 'accepted';
+    });
+
+    setOrders(userOrders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
   };
 
   useEffect(() => {
     if (authLoading) return;
-    if (!user) {
+    if (!user?.uid) {
       setLoading(false);
       return;
     }
 
     setLoading(true);
+    let cancelled = false;
     const ordersRef = ref(db, 'orders');
     const userOrdersQuery = query(ordersRef, orderByChild('userId'), equalTo(user.uid));
-    
-    const unsubscribe = onValue(userOrdersQuery, (snapshot) => {
+
+    const finish = () => {
+      if (!cancelled) setLoading(false);
+    };
+
+    const loadFallback = async () => {
       try {
-        const data = snapshot.val();
-        if (data) {
-          const allOrders = Object.entries(data).map(([key, value]) => ({
-            ...(value as any),
-            id: key
-          })) as Order[];
-          
-          // Case-insensitive status filtering for active orders
-          const userOrders = allOrders.filter(order => {
-            const status = order.status?.toLowerCase();
-            return status === 'pending' || status === 'accepted';
-          });
-          
-          setOrders(userOrders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
-        } else {
-          setOrders([]);
-        }
+        const snap = await get(ordersRef);
+        const all = snap.val() || {};
+        const mine = Object.fromEntries(
+          Object.entries(all).filter(([, o]) => (o as { userId?: string }).userId === user.uid)
+        );
+        if (!cancelled) processOrdersSnapshot(mine);
       } catch (err) {
-        console.error("Error processing orders:", err);
-        setOrders([]);
+        console.error('Orders fallback load failed:', err);
+        if (!cancelled) setOrders([]);
       } finally {
-        setLoading(false);
+        finish();
       }
-    });
+    };
 
-    return () => unsubscribe();
-  }, [user.uid]);
+    const unsubscribe = onValue(
+      userOrdersQuery,
+      (snapshot) => {
+        try {
+          processOrdersSnapshot(snapshot.val());
+        } catch (err) {
+          console.error('Error processing orders:', err);
+          setOrders([]);
+        } finally {
+          finish();
+        }
+      },
+      (error) => {
+        console.warn('Orders indexed query failed, using fallback:', error);
+        loadFallback();
+      }
+    );
 
-  if (authLoading) {
+    const timeout = setTimeout(() => {
+      if (!cancelled) finish();
+    }, 12000);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+      unsubscribe();
+    };
+  }, [user?.uid, authLoading]);
+
+  if (authLoading && !user) {
     return (
       <div className="flex items-center justify-center min-h-full bg-white">
         <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-600"></div>
@@ -239,33 +230,23 @@ export const OrderHistory: React.FC = () => {
 
   return (
     <div className="flex flex-col min-h-screen">
-      <div className="bg-[#2d3446] px-6 pt-[calc(1rem+env(safe-area-inset-top,0px))] pb-8 rounded-b-[2.5rem] shadow-2xl relative overflow-hidden">
-        {/* Low-poly geometric background elements */}
-        <div className="absolute inset-0 opacity-20">
-          <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[60%] bg-[#4a5568] rotate-[15deg] skew-x-[-10deg]" />
-          <div className="absolute top-[10%] right-[-5%] w-[35%] h-[50%] bg-[#3a445a] rotate-[-20deg] skew-y-[5deg]" />
-          <div className="absolute bottom-[-15%] left-[20%] w-[50%] h-[40%] bg-[#4a5568] rotate-[5deg] skew-x-[20deg]" />
-          <div className="absolute top-[30%] left-[40%] w-[20%] h-[30%] bg-[#5a677c] rotate-[45deg]" />
-        </div>
-        
-        {/* Subtle gradient overlay */}
-        <div className="absolute inset-0 bg-gradient-to-t from-[#2d3446] via-transparent to-transparent opacity-60" />
-
+      <div className="bg-gradient-to-br from-blue-600 to-blue-700 px-6 pt-[calc(1rem+env(safe-area-inset-top,0px))] pb-8 rounded-b-[2.5rem] shadow-lg relative overflow-hidden">
         <div className="relative z-10">
           <h1 className="text-2xl font-black text-white tracking-tight uppercase">{t('My Bookings')}</h1>
-          <p className="text-slate-400 text-xs font-bold mt-1 uppercase tracking-widest">{t('Track your service requests')}</p>
+          <p className="text-blue-100 text-xs font-bold mt-1 uppercase tracking-widest">{t('Track your service requests')}</p>
         </div>
         
-        <div className="flex bg-white/5 p-1 rounded-2xl overflow-x-auto no-scrollbar scroll-smooth mt-6 mb-2 backdrop-blur-xl border border-white/10 relative z-10">
+        <div className="flex bg-white/20 p-1 rounded-2xl overflow-x-auto no-scrollbar scroll-smooth mt-6 mb-2 border border-white/30 relative z-10">
           {FILTER_ORDER.map((s) => (
             <button
               key={s}
+              type="button"
               onClick={() => setFilter(s)}
               className={cn(
                 "flex-1 min-w-fit whitespace-nowrap px-4 py-2.5 text-xs font-bold rounded-xl transition-all",
                 filter === s 
                   ? "bg-white text-blue-600 shadow-sm" 
-                  : "text-white/80 hover:text-white",
+                  : "text-white hover:bg-white/10",
                 language === 'en' ? "capitalize" : ""
               )}
             >
@@ -275,20 +256,7 @@ export const OrderHistory: React.FC = () => {
         </div>
       </div>
 
-      <motion.div 
-        className="flex-1 relative bg-emerald-100/40 min-h-screen"
-        drag="x"
-        dragConstraints={{ left: 0, right: 0 }}
-        dragElastic={0.2}
-        onDragEnd={(_, info) => {
-          const threshold = 50;
-          if (info.offset.x < -threshold) {
-             handleSwipe('left');
-          } else if (info.offset.x > threshold) {
-             handleSwipe('right');
-          }
-        }}
-      >
+      <div className="flex-1 relative bg-slate-50 min-h-0">
         <AbstractGradientBackground />
         <div className="px-6 pt-6 pb-32 space-y-4 relative z-10">
         {loading ? (
@@ -415,7 +383,7 @@ export const OrderHistory: React.FC = () => {
           </div>
         )}
         </div>
-      </motion.div>
+      </div>
 
       {/* Order Detail Modal */}
       <AnimatePresence>
@@ -434,7 +402,7 @@ export const OrderHistory: React.FC = () => {
             >
               <div className="flex justify-between items-center mb-6">
                 <h2 className="text-xl font-bold text-slate-900">{t('Booking Details')}</h2>
-                <button onClick={() => window.history.back()} className="text-slate-400">{t('Close')}</button>
+                <button type="button" onClick={() => handleSetSelectedOrder(null)} className="text-slate-400">{t('Close')}</button>
               </div>
 
               <div className="space-y-6">
@@ -658,13 +626,13 @@ export const OrderHistory: React.FC = () => {
                   <RateWorkerModal 
                     workerId={selectedOrder.workerId} 
                     orderId={selectedOrder.id} 
-                    onClose={() => window.history.back()} 
+                    onClose={() => handleSetIsRateModalOpen(false)} 
                   />
                 )}
                 {isRejectionModalOpen && (
                   <RejectionReasonModal
                     isOpen={isRejectionModalOpen}
-                    onClose={() => window.history.back()}
+                    onClose={() => handleSetIsRejectionModalOpen(false)}
                     onSubmit={handleCancelOrder}
                     isProcessing={isCancelling}
                   />

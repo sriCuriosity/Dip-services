@@ -145,6 +145,9 @@ export const WorkerDashboard: React.FC = () => {
         }
       }
       setLoadingStates(prev => ({ ...prev, worker: false }));
+    }, (error) => {
+      console.error("Worker profile error:", error);
+      setLoadingStates(prev => ({ ...prev, worker: false }));
     });
 
     // Fetch outdoor specific profile
@@ -161,6 +164,9 @@ export const WorkerDashboard: React.FC = () => {
           }).catch(err => console.error("Failed to sync outdoor contact info:", err));
         }
       }
+      setLoadingStates(prev => ({ ...prev, outdoor: false }));
+    }, (error) => {
+      console.error("Outdoor profile error:", error);
       setLoadingStates(prev => ({ ...prev, outdoor: false }));
     });
 
@@ -179,47 +185,68 @@ export const WorkerDashboard: React.FC = () => {
         }
       }
       setLoadingStates(prev => ({ ...prev, shop: false }));
+    }, (error) => {
+      console.error("Shop profile error:", error);
+      setLoadingStates(prev => ({ ...prev, shop: false }));
     });
 
     const ordersRef = ref(db, 'orders');
-    
-    const unsubOrders = onValue(ordersRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        const allOrders = Object.entries(data).map(([key, value]) => ({
-          ...(value || {} as any),
-          id: key
-        })) as Order[];
-        const workerOrders = allOrders.filter(order => 
-          order.workerId === profile.uid || 
-          (Array.isArray(order.broadcastedTo) && order.broadcastedTo.includes(profile.uid) && order.status?.toLowerCase() === 'pending')
-        );
-        setOrders(workerOrders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
+    const workerOrdersQuery = query(ordersRef, orderByChild('workerId'), equalTo(profile.uid));
+    const broadcastQuery = query(ordersRef, orderByChild('status'), equalTo('pending'));
 
-        const now = Date.now();
-        const overdue = workerOrders.some(order => {
-          const status = order.status?.toLowerCase();
-          const isDone = status === 'completed' || (status === 'rejected' && (order as any).isFine);
-          if (!isDone || order.commissionPaid || (order.platformFee || 0) <= 0 || (order as any).paymentRequested === true) return false;
-          
-          const milestone = order.completedAt || order.rejectedAt || order.acceptedAt || order.createdAt;
-          if (!milestone) return false;
-          const deadline = milestone + (6 * 24 * 60 * 60 * 1000);
-          return deadline < now;
-        });
-        setHasOverdueOrders(overdue);
-      } else {
-        setOrders([]);
-        setHasOverdueOrders(false);
-      }
+    let ownOrders: Order[] = [];
+    let broadcastOrders: Order[] = [];
+
+    const mergeAndSet = () => {
+      // Merge own orders + broadcast orders where this worker is listed
+      const broadcastFiltered = broadcastOrders.filter(o =>
+        o.workerId === 'broadcast' &&
+        Array.isArray((o as any).broadcastedTo) &&
+        (o as any).broadcastedTo.includes(profile.uid) &&
+        !ownOrders.find(own => own.id === o.id)
+      );
+      const merged = [...ownOrders, ...broadcastFiltered]
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      setOrders(merged);
+
+      const now = Date.now();
+      const overdue = ownOrders.some(order => {
+        const status = order.status?.toLowerCase();
+        const isDone = status === 'completed' || (status === 'rejected' && (order as any).isFine);
+        if (!isDone || order.commissionPaid || (order.platformFee || 0) <= 0 || (order as any).paymentRequested === true) return false;
+        const milestone = order.completedAt || order.rejectedAt || order.acceptedAt || order.createdAt;
+        if (!milestone) return false;
+        return (milestone + 6 * 24 * 60 * 60 * 1000) < now;
+      });
+      setHasOverdueOrders(overdue);
+    };
+
+    const unsubOrders = onValue(workerOrdersQuery, (snapshot) => {
+      const data = snapshot.val();
+      ownOrders = data
+        ? (Object.entries(data).map(([key, value]) => ({ ...(value || {} as any), id: key })) as Order[])
+        : [];
+      mergeAndSet();
+      setLoadingStates(prev => ({ ...prev, orders: false }));
+    }, (error) => {
+      console.error("Orders error:", error);
       setLoadingStates(prev => ({ ...prev, orders: false }));
     });
+
+    const unsubBroadcast = onValue(broadcastQuery, (snapshot) => {
+      const data = snapshot.val();
+      broadcastOrders = data
+        ? (Object.entries(data).map(([key, value]) => ({ ...(value || {} as any), id: key })) as Order[])
+        : [];
+      mergeAndSet();
+    }, () => { broadcastOrders = []; });
 
     return () => {
       unsubWorker();
       unsubOutdoor();
       unsubShop();
       unsubOrders();
+      unsubBroadcast();
     };
   }, [profile]);
 
@@ -550,9 +577,31 @@ export const WorkerDashboard: React.FC = () => {
     return false;
   });
 
+  // Background Location Tracking for Available Workers
+  useEffect(() => {
+    if (profile && workerProfile?.isAvailable) {
+      startBackgroundLocationTracking((lat, lng) => {
+        const workerRef = ref(db, `workers/${profile.uid}`);
+        update(workerRef, {
+          latitude: lat,
+          longitude: lng,
+          lastLocationUpdate: Date.now()
+        }).catch(err => console.error("Failed to update bg location:", err));
+      }, (errType) => {
+        console.warn("[Worker] BgLocation error:", errType);
+      });
+    } else {
+      stopBackgroundLocationTracking();
+    }
+
+    return () => {
+      stopBackgroundLocationTracking();
+    };
+  }, [profile, workerProfile?.isAvailable]);
+
   if (loading) {
     return (
-      <div className="p-8 flex flex-col items-center justify-center min-h-full">
+      <div className="p-8 flex-1 flex flex-col items-center justify-center min-h-[70vh]">
         <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
       </div>
     );
@@ -564,7 +613,7 @@ export const WorkerDashboard: React.FC = () => {
 
   if (!hasRegularProfile && !hasOutdoorProfile && !hasShopProfile) {
     return (
-      <div className="p-8 flex flex-col items-center justify-center min-h-full text-center">
+      <div className="p-8 flex-1 flex flex-col items-center justify-center min-h-[70vh] text-center">
         <div className="w-20 h-20 bg-blue-100 text-blue-600 rounded-3xl flex items-center justify-center mb-6">
           <AlertCircle size={40} />
         </div>
@@ -608,30 +657,10 @@ export const WorkerDashboard: React.FC = () => {
     update(ref(db, `workers/${profile.uid}`), updates);
   };
 
-  // Background Location Tracking for Available Workers
-  useEffect(() => {
-    if (profile && workerProfile?.isAvailable) {
-      startBackgroundLocationTracking((lat, lng) => {
-        const workerRef = ref(db, `workers/${profile.uid}`);
-        update(workerRef, {
-          latitude: lat,
-          longitude: lng,
-          lastLocationUpdate: Date.now()
-        }).catch(err => console.error("Failed to update bg location:", err));
-      }, (errType) => {
-        console.warn("[Worker] BgLocation error:", errType);
-      });
-    } else {
-      stopBackgroundLocationTracking();
-    }
 
-    return () => {
-      stopBackgroundLocationTracking();
-    };
-  }, [profile, workerProfile?.isAvailable]);
 
   return (
-    <div className="flex flex-col min-h-full">
+    <div className="flex-1 flex flex-col">
       <div className="bg-[#2d3446] px-6 pt-[calc(1rem+env(safe-area-inset-top,0px))] pb-6 rounded-b-[2rem] shadow-2xl relative overflow-hidden">
         {/* Low-poly geometric background elements */}
         <div className="absolute -inset-0 opacity-20">

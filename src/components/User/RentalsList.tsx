@@ -1,19 +1,25 @@
-import React, { useState, useEffect } from 'react';
-import { ref, onValue, get, update } from 'firebase/database';
+import React, { useState, useEffect, useMemo } from 'react';
+import { ref, get, update, query, orderByChild, equalTo } from 'firebase/database';
 import { db } from '@/src/lib/firebase';
-import { useNavigate, useOutletContext } from 'react-router-dom';
-import { MapPin, Search, Star, Car, Truck, Home, Utensils, Building2, Store, ChevronRight, MessageSquare, ShieldCheck, ShieldAlert, Hammer, X, Calendar, Clock, ArrowLeft } from 'lucide-react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { useLayoutOutlet } from '@/src/contexts/LayoutOutletContext';
+import { MapPin, Search, Star, Car, Truck, Home, Utensils, Building2, Store, ChevronRight, MessageSquare, ShieldCheck, ShieldAlert, Hammer, X, Calendar, Clock, ArrowLeft, Zap, Users } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn, formatCurrency, getDistance, calculatePlatformFeePercentage } from '@/src/lib/utils';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { useLanguage } from '@/src/contexts/LanguageContext';
 import { WorkerDetail } from './WorkerDetail';
+import { WorkersGroupedList } from './WorkersGroupedList';
 import { FullScreenImage } from '../Common/FullScreenImage';
 import { AbstractGradientBackground } from '../Common/AbstractGradientBackground';
 import { WorkerProfile as WorkerProfileType } from '@/src/types';
 import { LocationPicker } from '../Common/LocationPicker';
 import { push, set } from 'firebase/database';
 import { FCMService } from '@/src/lib/fcmService';
+import { KANYAKUMARI_CITIES } from '../../lib/citiesData';
+import { useWorkerDirectory } from '@/src/hooks/useWorkerDirectory';
+import { filterRentalWorkers, workersForRentalTrade } from '@/src/lib/workerDirectory';
+import { CategoryWorkersPage } from './CategoryWorkersPage';
 
 const RENTAL_SERVICES = [
   { id: 'Auto', icon: Car, image: '/assets/categories/auto.jpg' },
@@ -39,24 +45,26 @@ const RENTAL_COLORS: Record<string, string> = {
   'Catering': 'bg-pink-100 text-pink-600 border-pink-200',
 };
 
-const RENTAL_TRADE_NAMES = RENTAL_SERVICES.map(s => s.id);
-
 export const RentalsList: React.FC = () => {
+  const location = useLocation();
   const { profile } = useAuth();
   const { t, language } = useLanguage();
   const navigate = useNavigate();
-  const { setIsChatOpen, unreadMessagesCount } = useOutletContext<{ setIsChatOpen: (open: boolean) => void, unreadMessagesCount: number }>();
-  const [workers, setWorkers] = useState<WorkerProfileType[]>([]);
+  const { setIsChatOpen, unreadMessagesCount, navTick } = useLayoutOutlet();
+  const { workers: allWorkers, loading: directoryLoading } = useWorkerDirectory(!!profile);
+  const workers = useMemo(() => filterRentalWorkers(allWorkers), [allWorkers]);
   const [filteredWorkers, setFilteredWorkers] = useState<WorkerProfileType[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const loading = directoryLoading;
   const [selectedWorker, setSelectedWorker] = useState<WorkerProfileType | null>(null);
   const [previewImage, setPreviewImage] = useState<{ src: string, alt: string } | null>(null);
   const [hasOverdueFees, setHasOverdueFees] = useState(false);
   const [isTransportBookingOpen, setIsTransportBookingOpen] = useState(false);
   const [bookingLoading, setBookingLoading] = useState(false);
   const [activePicker, setActivePicker] = useState<'source' | 'dest' | null>(null);
+  const [bookingModeSheet, setBookingModeSheet] = useState<string | null>(null);
+  const [workerListPage, setWorkerListPage] = useState<string | null>(null);
   const [bookingDetails, setBookingDetails] = useState({
     trade: '',
     pickupPoint: '', // Source description
@@ -74,93 +82,30 @@ export const RentalsList: React.FC = () => {
   });
 
   useEffect(() => {
-    setLoading(true);
-    const workersRef = ref(db, 'workers');
-    const usersRef = ref(db, 'users');
+    if (!profile?.uid) return;
+    const userOrdersQuery = query(ref(db, 'orders'), orderByChild('userId'), equalTo(profile.uid));
+    get(userOrdersQuery).then((snapshot) => {
+      const ordersData = snapshot.val() || {};
+      const now = Date.now();
+      const hasFees = Object.values(ordersData).some((o: any) =>
+        o.userCancellationFee &&
+        !o.userCancellationPaid &&
+        o.userCancellationDueDate &&
+        o.userCancellationDueDate < now
+      );
+      setHasOverdueFees(hasFees);
+    }).catch(() => setHasOverdueFees(false));
+  }, [profile?.uid]);
 
-    const unsubscribeWorkers = onValue(workersRef, (workersSnap) => {
-      onValue(usersRef, (usersSnap) => {
-        const workersData = workersSnap.val() || {};
-        const usersData = usersSnap.val() || {};
-
-        const allWorkers = Object.entries(workersData).flatMap(([key, value]) => {
-          const userData = usersData[key] || {};
-          const val = value as any;
-          
-          if (val.trades && typeof val.trades === 'object') {
-            return Object.entries(val.trades).map(([tradeName, tradeData]) => {
-              const tData = tradeData as any;
-              return {
-                ...(val as any),
-                ...tData,
-                uid: key,
-                trade: tradeName.trim(),
-                name: userData.name || 'Unknown',
-                phone: (val as any).phone || userData.phone || '',
-                photoURL: tData.photoURL || userData.photoURL || '',
-                city: tData.city || (val as any).city || userData.city || '',
-                address: tData.address || (val as any).address || userData.address || '',
-                latitude: tData.latitude || (val as any).latitude || userData.latitude || null,
-                longitude: tData.longitude || (val as any).longitude || userData.longitude || null,
-                deleted: userData.deleted || (val as any).deleted || false
-              };
-            });
-          }
-          
-          return {
-            ...(val as any),
-            uid: key,
-            name: userData.name || 'Unknown',
-            phone: (val as any).phone || userData.phone || '',
-            photoURL: userData.photoURL || '',
-            city: (val as any).city || userData.city || '',
-            address: (val as any).address || userData.address || '',
-            deleted: userData.deleted || (val as any).deleted || false
-          };
-        });
-
-        const rentalWorkers = allWorkers.filter(w => 
-          !w.deleted && 
-          typeof w.trade === 'string' && 
-          w.trade.trim() !== '' && 
-          RENTAL_TRADE_NAMES.includes(w.trade)
-        );
-
-        const unique = Array.from(new Map(rentalWorkers.map(item => [`${item.uid}-${item.trade}`, item])).values())
-          .sort((a, b) => a.name.localeCompare(b.name));
-
-        setWorkers(unique);
-        setFilteredWorkers(unique);
-        setLoading(false);
-      }, { onlyOnce: false });
-    }, { onlyOnce: false });
-
-    // Check overdue fees separately (only once is fine for performance)
-    if (profile) {
-      get(ref(db, 'orders')).then(snapshot => {
-        const ordersData = snapshot.val() || {};
-        const now = Date.now();
-        const hasFees = Object.values(ordersData).some((o: any) => 
-          o.userId === profile.uid && 
-          o.userCancellationFee && 
-          !o.userCancellationPaid &&
-          o.userCancellationDueDate &&
-          o.userCancellationDueDate < now
-        );
-        setHasOverdueFees(hasFees);
-      });
-    }
-
-    return () => {
-      unsubscribeWorkers();
-    };
-  }, [profile]);
+  useEffect(() => {
+    setFilteredWorkers(workers);
+  }, [workers]);
 
   useEffect(() => {
     let result = workers;
 
     if (selectedCategory) {
-      result = result.filter(w => w.trade === selectedCategory);
+      result = workersForRentalTrade(result, selectedCategory);
     }
 
     if (searchQuery) {
@@ -178,28 +123,7 @@ export const RentalsList: React.FC = () => {
 
   useEffect(() => {
     window.scrollTo(0, 0);
-    const handlePopState = () => {
-      // Restore selected worker from state if present
-      if (window.history.state?.workerDetail && window.history.state?.worker) {
-        setSelectedWorker(window.history.state.worker);
-      } else if (!window.history.state?.workerDetail) {
-        setSelectedWorker(null);
-      }
-      
-      // Handle preview image separately if needed
-      if (!window.history.state?.previewImage) {
-        setPreviewImage(null);
-      }
-    };
-
-    // Check initial state on mount to restore detail view
-    if (window.history.state?.workerDetail && window.history.state?.worker) {
-      setSelectedWorker(window.history.state.worker);
-    }
-
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
-  }, []);
+  }, [selectedWorker]);
 
   const handleOpenTransportBooking = (trade: string) => {
     setBookingDetails({
@@ -217,7 +141,6 @@ export const RentalsList: React.FC = () => {
       destLng: null,
       offeredAmount: '0'
     });
-    window.history.pushState({ transportBooking: true }, '');
     setIsTransportBookingOpen(true);
   };
 
@@ -233,13 +156,19 @@ export const RentalsList: React.FC = () => {
       return;
     }
 
+    if (!profile?.latitude || !profile?.longitude) {
+      alert(t("Please turn on your location to book instant rides."));
+      return;
+    }
+
     setBookingLoading(true);
     try {
       const ordersRef = ref(db, 'orders');
       const newOrderRef = push(ordersRef);
       const orderId = newOrderRef.key;
 
-      const msgTime = `${bookingDetails.hour}:${bookingDetails.minute} ${bookingDetails.ampm}`;
+      const _n = new Date();
+      const msgTime = `${_n.getHours().toString().padStart(2,'0')}:${_n.getMinutes().toString().padStart(2,'0')} (Instant)`;
       const feeRate = calculatePlatformFeePercentage(bookingDetails.trade);
       
       const dist = getDistance(bookingDetails.sourceLat!, bookingDetails.sourceLng!, bookingDetails.destLat!, bookingDetails.destLng!);
@@ -287,18 +216,34 @@ export const RentalsList: React.FC = () => {
         if (val.isAvailable && val.trades && val.trades[bookingDetails.trade] && val.fcmToken) {
           const wLat = val.trades[bookingDetails.trade].latitude || val.latitude;
           const wLng = val.trades[bookingDetails.trade].longitude || val.longitude;
-          const lastUpdate = val.lastLocationUpdate || 0;
           
-          if (now - lastUpdate <= MAX_FRESHNESS && wLat && wLng) {
-            const distance = getDistance(bookingDetails.sourceLat!, bookingDetails.sourceLng!, wLat, wLng);
-            if (distance <= 25) {
-              workersToNotify.push(uid);
-              tokensToNotify.push(val.fcmToken);
+          let conditionMet = false;
+          
+          const uLat = bookingDetails.sourceLat!;
+          const uLng = bookingDetails.sourceLng!;
+
+          // Condition 2: If worker has GPS location, check 18km limit
+          if (wLat && wLng) {
+            const distance = getDistance(uLat, uLng, wLat, wLng);
+            if (distance <= 18) {
+              conditionMet = true;
             }
-          } else if (val.city === profile.city) {
-              // Fallback to city match if location not fresh but in same city
-              workersToNotify.push(uid);
-              tokensToNotify.push(val.fcmToken);
+          }
+          
+          // Condition 3: If GPS was >18km (possibly stale) or missing, fallback to checking their registered city coordinates (8km limit)
+          if (!conditionMet && val.city) {
+            const cityCoords = (window as any).KANYAKUMARI_CITIES?.[val.city] || KANYAKUMARI_CITIES[val.city as keyof typeof KANYAKUMARI_CITIES];
+            if (cityCoords) {
+              const cityDistance = getDistance(uLat, uLng, cityCoords.lat, cityCoords.lng);
+              if (cityDistance <= 8) {
+                conditionMet = true;
+              }
+            }
+          }
+
+          if (conditionMet) {
+            workersToNotify.push(uid);
+            tokensToNotify.push(val.fcmToken);
           }
         }
       });
@@ -335,22 +280,43 @@ export const RentalsList: React.FC = () => {
     }
   };
 
+  useEffect(() => {
+    setSelectedWorker(null);
+    setPreviewImage(null);
+    setIsTransportBookingOpen(false);
+    setBookingModeSheet(null);
+    setActivePicker(null);
+  }, [location.pathname, navTick]);
+
   const handleSetSelectedWorker = (worker: WorkerProfileType | null) => {
-    if (worker) {
-      window.history.pushState({ workerDetail: true, worker: worker }, '');
-    }
     setSelectedWorker(worker);
   };
 
   const handleSetPreviewImage = (image: { src: string, alt: string } | null) => {
-    if (image) {
-      window.history.pushState({ previewImage: true }, '');
-    }
     setPreviewImage(image);
   };
 
   if (selectedWorker) {
-    return <WorkerDetail worker={selectedWorker} onBack={() => window.history.back()} hasOverdueFees={hasOverdueFees} />;
+    return (
+      <div className="flex flex-col min-h-screen pb-28">
+        <WorkerDetail worker={selectedWorker} onBack={() => setSelectedWorker(null)} hasOverdueFees={hasOverdueFees} />
+      </div>
+    );
+  }
+
+  if (workerListPage) {
+    const tradeWorkers = workersForRentalTrade(workers, workerListPage);
+    return (
+      <CategoryWorkersPage
+        category={workerListPage}
+        workers={tradeWorkers}
+        loading={loading}
+        variant="rental"
+        onBack={() => setWorkerListPage(null)}
+        onSelectWorker={handleSetSelectedWorker}
+        onPreviewImage={(src, alt) => handleSetPreviewImage({ src, alt })}
+      />
+    );
   }
 
   return (
@@ -571,9 +537,9 @@ export const RentalsList: React.FC = () => {
                 whileTap={{ scale: 0.95 }}
                 onClick={() => {
                   if (['Auto', 'Tempo', 'Van', 'Car'].includes(service.id)) {
-                    handleOpenTransportBooking(service.id);
+                    setBookingModeSheet(service.id);
                   } else {
-                    setSelectedCategory(service.id === selectedCategory ? null : service.id);
+                    setWorkerListPage(service.id);
                   }
                 }}
                 className="flex flex-col items-center gap-1.5 flex-shrink-0"
@@ -622,107 +588,19 @@ export const RentalsList: React.FC = () => {
             </button>
           </div>
 
-          {loading ? (
+          {loading && filteredWorkers.length === 0 ? (
             <div className="space-y-4">
-              {[1, 2, 3].map(i => (
-                <div key={i} className="h-24 bg-slate-100 animate-pulse rounded-2xl" />
-              ))}
+              <div className="h-24 bg-white/80 animate-pulse rounded-2xl border border-slate-100" />
+              <p className="text-center text-xs text-slate-500 font-medium">{t('Loading workers...')}</p>
             </div>
           ) : filteredWorkers.length > 0 ? (
-            <div className="space-y-4">
-              {filteredWorkers.map((worker) => (
-                <motion.div
-                  key={`${worker.uid}-${worker.trade}`}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  onClick={() => handleSetSelectedWorker(worker)}
-                  className="bg-white p-5 rounded-[24px] border border-slate-100 shadow-sm hover:shadow-md hover:border-blue-100 flex items-start gap-4 cursor-pointer active:scale-[0.98] transition-all duration-300 relative overflow-hidden group"
-                >
-                  <div 
-                    className="w-16 h-16 bg-slate-100 rounded-2xl overflow-hidden flex-shrink-0 mt-1 cursor-zoom-in relative z-10 shadow-sm border border-slate-200/50"
-                    onClick={(e) => {
-                      if (worker.photoURL) {
-                        e.stopPropagation();
-                        handleSetPreviewImage({ src: worker.photoURL, alt: worker.name });
-                      }
-                    }}
-                  >
-                    {worker.photoURL ? (
-                      <img src={worker.photoURL} alt={worker.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center bg-blue-50 text-blue-600">
-                        <Hammer size={24} />
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0 relative z-10">
-                    {/* Name and Rating Row */}
-                    <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-1.5 mb-1.5">
-                      <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
-                        <h3 className="font-bold text-slate-900 break-words leading-snug text-sm">{worker.name}</h3>
-                        <div className="flex items-center gap-2 flex-shrink-0">
-                          <div className="flex items-center gap-0.5 text-amber-500 text-[10px] font-bold">
-                            <Star size={10} className="fill-amber-500" />
-                            {(() => {
-                              const tradeRating = worker.trades?.[worker.trade || '']?.rating;
-                              const rating = tradeRating !== undefined ? tradeRating : worker.rating;
-                              return rating ? rating.toFixed(1) : '0.0';
-                            })()}
-                          </div>
-                          {worker.verificationStatus === 'approved' ? (
-                            <ShieldCheck size={14} className="text-emerald-500" />
-                          ) : (
-                            <ShieldAlert size={14} className="text-red-500" />
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-1 bg-blue-50 text-blue-600 px-2 py-0.5 rounded-lg flex-shrink-0 font-bold text-[9px] max-w-[75px]">
-                        <MapPin size={9} className="shrink-0" />
-                        <span className="break-all line-clamp-2">{worker.city || t('Unknown')}</span>
-                      </div>
-                    </div>
-
-                    {/* Row 2: Type of trade */}
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-slate-600 font-medium break-words pr-2 line-clamp-1">{t(worker.trade || 'Service')}</span>
-                    </div>
-
-                    {/* Row 3: Experience */}
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-slate-500 break-words">{worker.experience} {t('Exp')}</span>
-                    </div>
-
-                    {/* Row 4: Address | Amount */}
-                    <div className="flex justify-between items-start text-xs mt-1 gap-3">
-                      <span className="text-slate-900 flex-1 min-w-0 break-words leading-tight">
-                        {worker.address || worker.location || t('No address provided')}
-                      </span>
-                      <div className="text-right flex-shrink-0 pl-1 border-l border-slate-100 min-w-[70px]">
-                        <span className="text-blue-600 font-bold block">
-                          {formatCurrency(
-                            ['house rent', 'shop rent', 'marriage hall', 'catering'].includes((worker.trade || '').toLowerCase().trim())
-                              ? (worker.rates as any)?.advance || 0
-                              : ['Auto', 'Tempo', 'Van', 'JCB', 'Car'].includes(worker.trade || '')
-                                ? (worker.rates as any)?.ratePerKm || (worker.rates as any)?.ratePerHour || 0
-                                : worker.rates?.quickVisit || 0
-                          )}
-                        </span>
-                        <span className="text-slate-400 text-[9px] font-bold block">
-                          {['house rent', 'shop rent', 'marriage hall', 'catering'].includes((worker.trade || '').toLowerCase().trim()) ? t('Advance') : t('Starts from')}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Row 5: Landmark */}
-                    {worker.landmark && (
-                      <div className="text-slate-400 text-[10px] mt-0.5 break-all">
-                        {t('Landmark:')} {worker.landmark}
-                      </div>
-                    )}
-                  </div>
-                </motion.div>
-              ))}
-            </div>
+            <WorkersGroupedList
+              key={`rentals-${navTick}-${selectedCategory || 'all'}`}
+              workers={filteredWorkers}
+              variant="rental"
+              onSelectWorker={handleSetSelectedWorker}
+              onPreviewImage={(src, alt) => handleSetPreviewImage({ src, alt })}
+            />
           ) : (
             <div className="text-center py-12 relative z-10">
               <div className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm inline-block">
@@ -740,7 +618,7 @@ export const RentalsList: React.FC = () => {
         src={previewImage?.src || ''}
         alt={previewImage?.alt}
         isOpen={!!previewImage}
-        onClose={() => window.history.back()}
+        onClose={() => setPreviewImage(null)}
       />
 
       {/* Transport Booking Modal */}
@@ -761,7 +639,7 @@ export const RentalsList: React.FC = () => {
                   </div>
                   <h2 className="text-xl font-bold text-slate-900 tracking-tight">{t('Book')} {t(bookingDetails.trade)}</h2>
                 </div>
-                <button onClick={() => window.history.back()} className="w-10 h-10 bg-slate-100 rounded-2xl flex items-center justify-center text-slate-400">
+                <button type="button" onClick={() => setIsTransportBookingOpen(false)} className="w-10 h-10 bg-slate-100 rounded-2xl flex items-center justify-center text-slate-400">
                   <X size={20} />
                 </button>
               </div>
@@ -807,53 +685,7 @@ export const RentalsList: React.FC = () => {
                   />
                 </div>
 
-                {/* Date and Time Selection */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block ml-1">{t('Pickup Date')}</label>
-                    <div className="relative">
-                      <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-500" size={16} />
-                      <input
-                        type="date"
-                        min={new Date().toISOString().split('T')[0]}
-                        className="w-full bg-slate-50 pl-11 pr-4 py-3 rounded-xl text-sm font-bold border-none focus:ring-0"
-                        value={bookingDetails.date}
-                        onChange={(e) => setBookingDetails({...bookingDetails, date: e.target.value})}
-                      />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block ml-1">{t('Pickup Time')}</label>
-                    <div className="relative">
-                      <Clock className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-500" size={16} />
-                      <div className="flex bg-slate-50 rounded-xl px-4 py-3 gap-1">
-                        <select 
-                          className="bg-transparent border-none p-0 text-sm font-bold focus:ring-0 appearance-none"
-                          value={bookingDetails.hour}
-                          onChange={(e) => setBookingDetails({...bookingDetails, hour: e.target.value})}
-                        >
-                          {Array.from({length: 12}, (_, i) => (i + 1).toString().padStart(2, '0')).map(h => <option key={h} value={h}>{h}</option>)}
-                        </select>
-                        <span className="text-sm font-bold">:</span>
-                        <select 
-                          className="bg-transparent border-none p-0 text-sm font-bold focus:ring-0 appearance-none"
-                          value={bookingDetails.minute}
-                          onChange={(e) => setBookingDetails({...bookingDetails, minute: e.target.value})}
-                        >
-                          {['00', '15', '30', '45'].map(m => <option key={m} value={m}>{m}</option>)}
-                        </select>
-                        <select 
-                          className="bg-transparent border-none p-0 text-sm font-bold focus:ring-0 appearance-none ml-1"
-                          value={bookingDetails.ampm}
-                          onChange={(e) => setBookingDetails({...bookingDetails, ampm: e.target.value})}
-                        >
-                          <option value="AM">AM</option>
-                          <option value="PM">PM</option>
-                        </select>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                {/* Instant booking — no date/time needed */}
 
                 {/* Estimate Section (Rapido-like) */}
                 {bookingDetails.sourceLat && bookingDetails.destLat && (
@@ -891,6 +723,62 @@ export const RentalsList: React.FC = () => {
                   )}
                 </button>
               </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Booking Mode Selection Sheet */}
+      <AnimatePresence>
+        {bookingModeSheet && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 z-[70] flex items-end justify-center px-4 pb-6"
+            onClick={() => setBookingModeSheet(null)}
+          >
+            <motion.div
+              initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white w-full max-w-md rounded-[2.5rem] p-6 shadow-2xl"
+            >
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h2 className="text-xl font-black text-slate-900">{t(bookingModeSheet)}</h2>
+                  <p className="text-xs text-slate-400 mt-0.5">{t('How would you like to book?')}</p>
+                </div>
+                <button onClick={() => setBookingModeSheet(null)} className="w-9 h-9 bg-slate-100 rounded-2xl flex items-center justify-center text-slate-400">
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                {/* Instant Booking */}
+                <button
+                  onClick={() => { handleOpenTransportBooking(bookingModeSheet!); setBookingModeSheet(null); }}
+                  className="flex flex-col items-center gap-3 p-5 bg-blue-50 border-2 border-blue-200 rounded-3xl active:scale-95 transition-all text-center hover:bg-blue-100"
+                >
+                  <div className="w-14 h-14 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-200">
+                    <Zap size={26} className="text-white fill-white" />
+                  </div>
+                  <div>
+                    <p className="font-black text-slate-900 text-sm">{t('Instant Booking')}</p>
+                    <p className="text-[10px] text-slate-500 mt-0.5 leading-tight">{t('Broadcast to nearby drivers')}</p>
+                  </div>
+                </button>
+                {/* Choose Worker */}
+                <button
+                  onClick={() => { setWorkerListPage(bookingModeSheet); setBookingModeSheet(null); }}
+                  className="flex flex-col items-center gap-3 p-5 bg-emerald-50 border-2 border-emerald-200 rounded-3xl active:scale-95 transition-all text-center hover:bg-emerald-100"
+                >
+                  <div className="w-14 h-14 bg-emerald-600 rounded-2xl flex items-center justify-center shadow-lg shadow-emerald-200">
+                    <Users size={26} className="text-white" />
+                  </div>
+                  <div>
+                    <p className="font-black text-slate-900 text-sm">{t('Choose Worker')}</p>
+                    <p className="text-[10px] text-slate-500 mt-0.5 leading-tight">{t('Pick a specific driver')}</p>
+                  </div>
+                </button>
+              </div>
             </motion.div>
           </motion.div>
         )}

@@ -18,6 +18,9 @@ L.Icon.Default.mergeOptions({
 // Initialize global push listeners immediately
 FCMService.initGlobalListeners();
 
+// Ensure light UI (Tailwind dark variant inverts bg-white, etc.)
+document.documentElement.classList.remove('dark');
+
 // Register the PWA service worker (also used for Firebase Messaging)
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {

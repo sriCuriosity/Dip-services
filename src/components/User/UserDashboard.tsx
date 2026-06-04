@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { ref, onValue, query, orderByChild, get, equalTo } from 'firebase/database';
+import React, { useState, useEffect, useMemo } from 'react';
+import { ref, get, query, orderByChild, equalTo } from 'firebase/database';
 import { db } from '@/src/lib/firebase';
 import { WorkerProfile as WorkerProfileType } from '@/src/types';
 import { Search, MapPin, Star, Hammer, Zap, Paintbrush, Droplets, Wrench, Sparkles, ChevronRight, Tv, Grid, Flame, BrickWall, Palmtree, Car, Truck, Home, Utensils, Building2, MessageSquare, ShieldCheck, Clock, XCircle, ShieldAlert, Store } from 'lucide-react';
@@ -8,11 +8,15 @@ import { cn, formatCurrency } from '@/src/lib/utils';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { useLanguage } from '@/src/contexts/LanguageContext';
 import { WorkerDetail } from './WorkerDetail';
-import { WorkerMapView } from './WorkerMapView';
+import { WorkersGroupedList } from './WorkersGroupedList';
 import { FullScreenImage } from '../Common/FullScreenImage';
 import { AbstractGradientBackground } from '../Common/AbstractGradientBackground';
 
-import { useNavigate, useOutletContext } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
+import { useLayoutOutlet } from '@/src/contexts/LayoutOutletContext';
+import { useWorkerDirectory } from '@/src/hooks/useWorkerDirectory';
+import { filterServiceWorkers, workersForServiceTrade } from '@/src/lib/workerDirectory';
+import { CategoryWorkersPage } from './CategoryWorkersPage';
 
 const SERVICES = [
   { id: 'Painter', icon: Paintbrush, image: '/assets/categories/Painter.png' },
@@ -45,161 +49,64 @@ const SERVICE_COLORS: Record<string, string> = {
 };
 
 export const UserDashboard: React.FC = () => {
+  const location = useLocation();
   const { profile } = useAuth();
   const { t, language, setLanguage } = useLanguage();
-  const navigate = useNavigate();
-  const { setIsChatOpen, unreadMessagesCount } = useOutletContext<{ setIsChatOpen: (open: boolean) => void, unreadMessagesCount: number }>();
-  const [workers, setWorkers] = useState<WorkerProfileType[]>([]);
+  const { setIsChatOpen, unreadMessagesCount, navTick } = useLayoutOutlet();
+  const { workers: allWorkers, loading: directoryLoading } = useWorkerDirectory(!!profile);
+  const workers = useMemo(() => filterServiceWorkers(allWorkers), [allWorkers]);
+  const allCities = useMemo(
+    () => Array.from(new Set(workers.map((w) => w.city).filter(Boolean))) as string[],
+    [workers]
+  );
   const [filteredWorkers, setFilteredWorkers] = useState<WorkerProfileType[]>([]);
-  const [members, setMembers] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [categoryListPage, setCategoryListPage] = useState<string | null>(null);
   const [selectedCity, setSelectedCity] = useState<string | null>(null);
-  const [allCities, setAllCities] = useState<string[]>([]);
   const [sortBy, setSortBy] = useState<'amount' | 'experience' | 'amount-high-low' | 'experience-low-high' | null>(null);
   const [selectedWorker, setSelectedWorker] = useState<WorkerProfileType | null>(null);
   const [previewImage, setPreviewImage] = useState<{ src: string, alt: string } | null>(null);
-  const [loading, setLoading] = useState(true);
+  const loading = directoryLoading;
   const [hasOverdueFees, setHasOverdueFees] = useState(false);
-  const [viewMode, setViewMode] = useState<'list' | 'map'>('list');
 
   useEffect(() => {
     if (!profile?.uid) return;
-    const ordersRef = ref(db, 'orders');
+    let cancelled = false;
     const userOrdersQuery = query(ref(db, 'orders'), orderByChild('userId'), equalTo(profile.uid));
-    const unsubscribe = onValue(userOrdersQuery, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        const orderList = Object.values(data) as any[];
+    const checkFees = () => {
+      get(userOrdersQuery).then((snapshot) => {
+        if (cancelled) return;
+        const data = snapshot.val();
+        if (!data) {
+          setHasOverdueFees(false);
+          return;
+        }
         const now = Date.now();
-        const overdue = orderList.some(o => 
-          !o.userCancellationPaid && 
-          o.userCancellationDueDate && 
-          o.userCancellationDueDate < now
+        const overdue = Object.values(data).some(
+          (o: any) =>
+            !o.userCancellationPaid && o.userCancellationDueDate && o.userCancellationDueDate < now
         );
         setHasOverdueFees(overdue);
-      }
-    });
-    return () => unsubscribe();
+      }).catch(() => {});
+    };
+    const timer = setTimeout(checkFees, 800);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [profile?.uid]);
 
-  useEffect(() => {
-    if (profile?.role === 'worker') {
-      navigate('/worker', { replace: true });
-    }
-  }, [profile, navigate]);
 
   useEffect(() => {
-    setLoading(true);
-    const workersRef = ref(db, 'workers');
-    const shopsRef = ref(db, 'shops');
-    const usersRef = ref(db, 'users');
-
-    // Use a combined listener approach for real-time updates
-    const unsubscribeWorkers = onValue(workersRef, (workersSnap) => {
-      onValue(usersRef, (usersSnap) => {
-        onValue(shopsRef, (shopsSnap) => {
-          const workersData = workersSnap.val() || {};
-          const usersData = usersSnap.val() || {};
-          const shopsData = shopsSnap.val() || {};
-
-          const regularWorkers = Object.entries(workersData).flatMap(([key, value]) => {
-            const userData = usersData[key] || {};
-            const val = value as any;
-            
-            if (val.trades && typeof val.trades === 'object') {
-              return Object.entries(val.trades).map(([tradeName, tradeData]) => {
-                const tData = tradeData as any;
-                return {
-                  ...(val as any),
-                  ...tData,
-                  uid: key,
-                  trade: tradeName.trim(),
-                  name: userData.name || 'Unknown Worker',
-                  phone: (val as any).phone || userData.phone || '',
-                  email: (val as any).email || userData.email || '',
-                  photoURL: tData.photoURL || userData.photoURL || '',
-                  city: tData.city || (val as any).city || userData.city || '',
-                  address: tData.address || (val as any).address || userData.address || '',
-                landmark: tData.landmark || (val as any).landmark || userData.landmark || '',
-                latitude: parseFloat(tData.latitude || (val as any).latitude || userData.latitude || '0') || null,
-                longitude: parseFloat(tData.longitude || (val as any).longitude || userData.longitude || '0') || null,
-                deleted: userData.deleted || (val as any).deleted || false
-                };
-              });
-            }
-            
-            return {
-              ...(val as any),
-              uid: key,
-              name: userData.name || 'Unknown Worker',
-              phone: (val as any).phone || userData.phone || '',
-              email: (val as any).email || userData.email || '',
-              photoURL: userData.photoURL || '',
-              city: (val as any).city || userData.city || '',
-              address: (val as any).address || userData.address || '',
-              landmark: (val as any).landmark || userData.landmark || '',
-              deleted: userData.deleted || (val as any).deleted || false
-            };
-          }).filter(w => !w.deleted);
-
-          const combinedList = regularWorkers.filter(worker => 
-            worker.trade && 
-            typeof worker.trade === 'string' &&
-            worker.trade.trim() !== '' &&
-            worker.trade !== 'undefined' &&
-            worker.trade !== 'null' &&
-            worker.trade !== 'Select a trade'
-          );
-          
-          const uniqueWorkers = Array.from(new Map(combinedList.map(item => [`${item.uid}-${item.trade}`, item])).values())
-            .sort((a, b) => a.name.localeCompare(b.name));
-          
-          const allMembers = Object.entries(usersData)
-            .filter(([_, userData]: [string, any]) => userData && !userData.deleted)
-            .map(([uid, userData]: [string, any]) => ({
-              uid,
-              name: userData.name || 'Unknown User',
-              phone: userData.phone || '',
-              photoURL: userData.photoURL || '',
-              city: userData.city || '',
-              address: userData.address || '',
-              role: userData.role || 'user',
-              deleted: userData.deleted || false
-            }))
-            .sort((a, b) => a.name.localeCompare(b.name));
-
-          const RENTAL_TRADES = ['Auto', 'Tempo', 'Van', 'JCB', 'Car', 'Marriage Hall', 'Catering', 'House Rent', 'Shop Rent'];
-          const nonRentalWorkers = uniqueWorkers.filter(w => !RENTAL_TRADES.includes(w.trade || ''));
-          
-          setWorkers(nonRentalWorkers);
-          setFilteredWorkers(nonRentalWorkers);
-          setMembers(allMembers);
-          setLoading(false);
-        }, { onlyOnce: false });
-      }, { onlyOnce: false });
-    }, { onlyOnce: false });
-
-    return () => {
-      unsubscribeWorkers();
-    };
-  }, []);
-
-  useEffect(() => {
-    const usersRef = ref(db, 'users');
-    const unsubscribeUsers = onValue(usersRef, (snapshot) => {
-      const usersData = snapshot.val() || {};
-      const allCitiesList = Array.from(new Set(Object.values(usersData).map((u: any) => u.city).filter(Boolean))) as string[];
-      setAllCities(allCitiesList);
-    });
-    return () => unsubscribeUsers();
-  }, []);
+    setFilteredWorkers(workers);
+  }, [workers]);
 
   useEffect(() => {
     let result = workers;
 
     if (selectedCategory) {
-      result = result.filter(w => w.trade === selectedCategory);
+      result = workersForServiceTrade(result, selectedCategory);
     }
 
     if (selectedCity) {
@@ -235,45 +142,39 @@ export const UserDashboard: React.FC = () => {
   }, [searchQuery, selectedCategory, selectedCity, workers, sortBy]);
 
   useEffect(() => {
-    const handlePopState = () => {
-      // Restore selected worker from state if present
-      if (window.history.state?.workerDetail && window.history.state?.worker) {
-        setSelectedWorker(window.history.state.worker);
-      } else if (!window.history.state?.workerDetail) {
-        setSelectedWorker(null);
-      }
-      
-      // Handle preview image separately if needed
-      if (!window.history.state?.previewImage) {
-        setPreviewImage(null);
-      }
-    };
-
-    // Check initial state on mount to restore detail view
-    if (window.history.state?.workerDetail && window.history.state?.worker) {
-       setSelectedWorker(window.history.state.worker);
-    }
-
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
-  }, []);
+    setSelectedWorker(null);
+    setPreviewImage(null);
+  }, [location.pathname, navTick]);
 
   const handleSetSelectedWorker = (worker: WorkerProfileType | null) => {
-    if (worker) {
-      window.history.pushState({ workerDetail: true, worker: worker }, '');
-    }
     setSelectedWorker(worker);
   };
 
   const handleSetPreviewImage = (image: { src: string, alt: string } | null) => {
-    if (image) {
-      window.history.pushState({ previewImage: true }, '');
-    }
     setPreviewImage(image);
   };
 
   if (selectedWorker) {
-    return <WorkerDetail worker={selectedWorker} onBack={() => window.history.back()} hasOverdueFees={hasOverdueFees} />;
+    return (
+      <div className="flex flex-col min-h-screen pb-28">
+        <WorkerDetail worker={selectedWorker} onBack={() => setSelectedWorker(null)} hasOverdueFees={hasOverdueFees} />
+      </div>
+    );
+  }
+
+  if (categoryListPage) {
+    const tradeWorkers = workersForServiceTrade(workers, categoryListPage);
+    return (
+      <CategoryWorkersPage
+        category={categoryListPage}
+        workers={tradeWorkers}
+        loading={loading}
+        variant="service"
+        onBack={() => setCategoryListPage(null)}
+        onSelectWorker={handleSetSelectedWorker}
+        onPreviewImage={(src, alt) => handleSetPreviewImage({ src, alt })}
+      />
+    );
   }
 
   return (
@@ -522,12 +423,15 @@ export const UserDashboard: React.FC = () => {
               key={service.id}
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
-              onClick={() => setSelectedCategory(service.id === selectedCategory ? null : service.id)}
+              onClick={() => {
+                setCategoryListPage(service.id);
+                setSelectedCategory(service.id);
+              }}
               className="flex flex-col items-center gap-1.5 flex-shrink-0"
             >
               <div className={cn(
                 "w-20 h-20 rounded-[1.8rem] flex items-center justify-center transition-all shadow-md border-2 overflow-hidden",
-                selectedCategory === service.id 
+                selectedCategory === service.id || categoryListPage === service.id
                   ? "bg-emerald-500 text-white border-emerald-500 shadow-emerald-200" 
                   : `${SERVICE_COLORS[service.id]} hover:border-slate-200`
               )}>
@@ -543,7 +447,7 @@ export const UserDashboard: React.FC = () => {
               </div>
               <span className={cn(
                 "text-[9px] font-black uppercase tracking-wider text-center w-20 px-0.5 break-words leading-[1.1] min-h-[2.2rem] flex items-center justify-center",
-                selectedCategory === service.id ? "text-emerald-600" : "text-slate-500"
+                selectedCategory === service.id || categoryListPage === service.id ? "text-emerald-600" : "text-slate-500"
               )}>
                 {t(service.id)}
               </span>
@@ -558,153 +462,31 @@ export const UserDashboard: React.FC = () => {
           <h2 className="text-lg font-bold text-slate-900 leading-tight">
             {selectedCategory ? `${t(selectedCategory)} ${t('Near You')}` : t('Recommended Workers')}
           </h2>
-          <div className="flex items-center gap-2">
-            <div className="flex bg-slate-100 p-1 rounded-xl">
-              <button 
-                onClick={() => setViewMode('list')}
-                className={cn(
-                  "px-3 py-1.5 rounded-lg text-xs font-bold transition-all",
-                  viewMode === 'list' ? "bg-white text-blue-600 shadow-sm" : "text-slate-500"
-                )}
-              >
-                List
-              </button>
-              <button 
-                onClick={() => setViewMode('map')}
-                className={cn(
-                  "px-3 py-1.5 rounded-lg text-xs font-bold transition-all",
-                  viewMode === 'map' ? "bg-white text-blue-600 shadow-sm" : "text-slate-500"
-                )}
-              >
-                Map
-              </button>
-            </div>
-            <button 
-              onClick={() => setSelectedCategory(null)}
-              className={cn(
-                "text-blue-600 text-sm font-semibold whitespace-nowrap flex-shrink-0 bg-white/80 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/50 shadow-sm",
-                !selectedCategory && "hidden"
-              )}
-            >
-              {t('See All')}
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => setSelectedCategory(null)}
+            className={cn(
+              "text-blue-600 text-sm font-semibold whitespace-nowrap flex-shrink-0 bg-white/80 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/50 shadow-sm",
+              !selectedCategory && "hidden"
+            )}
+          >
+            {t('See All')}
+          </button>
         </div>
 
-        {loading ? (
+        {loading && filteredWorkers.length === 0 ? (
           <div className="space-y-4">
-            {[1, 2, 3].map(i => (
-              <div key={i} className="h-24 bg-slate-100 animate-pulse rounded-2xl" />
-            ))}
+            <div className="h-24 bg-white/80 animate-pulse rounded-2xl border border-slate-100" />
+            <p className="text-center text-xs text-slate-500 font-medium">{t('Loading workers...')}</p>
           </div>
         ) : filteredWorkers.length > 0 ? (
-          viewMode === 'list' ? (
-            <div className="space-y-4">
-              {filteredWorkers.map((worker) => (
-                <motion.div
-                  key={`${worker.uid}-${worker.trade}`}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  onClick={() => handleSetSelectedWorker(worker)}
-                  className="bg-white p-5 rounded-[24px] border border-slate-100 shadow-sm hover:shadow-md hover:border-blue-100 flex items-start gap-4 cursor-pointer active:scale-[0.98] transition-all duration-300 relative overflow-hidden group"
-                >
-                  <div 
-                    className="w-16 h-16 bg-slate-100 rounded-2xl overflow-hidden flex-shrink-0 mt-1 cursor-zoom-in relative z-10 shadow-sm border border-slate-200/50"
-                    onClick={(e) => {
-                      if (worker.photoURL) {
-                        e.stopPropagation();
-                          handleSetPreviewImage({ src: worker.photoURL, alt: worker.name });
-                      }
-                    }}
-                  >
-                    {worker.photoURL ? (
-                      <img src={worker.photoURL} alt={worker.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center bg-blue-50 text-blue-600">
-                        <Hammer size={24} />
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0 relative z-10">
-                    {/* Name and Rating Row */}
-                    <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-1.5 mb-1.5">
-                      <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
-                        <h3 className="font-bold text-slate-900 break-words leading-snug text-sm">{worker.name}</h3>
-                        <div className="flex items-center gap-2 flex-shrink-0">
-                          <div className="flex items-center gap-0.5 text-amber-500 text-[10px] font-bold">
-                            <Star size={10} className="fill-amber-500" />
-                            {(() => {
-                              const tradeRating = worker.trades?.[worker.trade || '']?.rating;
-                              const rating = tradeRating !== undefined ? tradeRating : worker.rating;
-                              return rating ? rating.toFixed(1) : '0.0';
-                            })()}
-                          </div>
-                          {worker.verificationStatus === 'approved' ? (
-                            <ShieldCheck size={14} className="text-emerald-500" />
-                          ) : (
-                            <ShieldAlert size={14} className="text-red-500" />
-                          )}
-                        </div>
-                      </div>
-                      {/* Location Badge */}
-                      <div className="flex items-center gap-1 bg-blue-50 text-blue-600 px-2 py-0.5 rounded-lg flex-shrink-0 font-bold text-[9px] max-w-[75px]">
-                        <MapPin size={9} className="shrink-0" />
-                        <span className="break-all line-clamp-2">{worker.city || t('Unknown')}</span>
-                      </div>
-                    </div>
-
-                    {/* Row 2: Type of trade (left) */}
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-slate-600 font-medium break-words pr-2 line-clamp-1">{t(worker.trade || 'Service')}</span>
-                    </div>
-
-                    {/* Row 3: Experience (left) */}
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-slate-500 break-words">{worker.experience} {t('Exp')}</span>
-                    </div>
-
-                    {/* Row 4: Address (left) | Amount starts from (right) */}
-                    <div className="flex justify-between items-start text-xs mt-1 gap-3">
-                      <span className="text-slate-900 flex-1 min-w-0 break-words leading-tight">
-                        {worker.address || worker.location || t('No address provided')}
-                      </span>
-                      <div className="text-right flex-shrink-0 pl-1 border-l border-slate-100 min-w-[70px]">
-                        <span className="text-blue-600 font-bold block">
-                          {formatCurrency(
-                            ['house rent', 'shop rent', 'marriage hall', 'catering'].includes((worker.trade || '').toLowerCase().trim())
-                              ? (worker.rates as any)?.advance || 0
-                              : ['Auto', 'Tempo', 'Van', 'JCB', 'Car'].includes(worker.trade || '')
-                                ? (worker.rates as any)?.ratePerKm || (worker.rates as any)?.ratePerHour || 0
-                              : (worker.trade || '') === 'Coconut Plucker'
-                                ? (worker.rates as any)?.ratePerTree || 0
-                              : worker.rates?.quickVisit || 0
-                          )}
-                        </span>
-                        <span className="text-slate-400 text-[9px] font-bold block">
-                          {['house rent', 'shop rent', 'marriage hall', 'catering'].includes((worker.trade || '').toLowerCase().trim()) ? t('Advance') : t('Starts from')}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Row 5: Landmark (left) */}
-                    {worker.landmark && (
-                      <div className="text-slate-400 text-[10px] mt-0.5 break-all">
-                        {t('Landmark:')} {t(worker.landmark)}
-                      </div>
-                    )}
-                  </div>
-                </motion.div>
-              ))}
-            </div>
-          ) : (
-            <div className="h-[500px] w-full mt-4">
-              <WorkerMapView 
-                workers={filteredWorkers} 
-                onSelectWorker={handleSetSelectedWorker} 
-                userCoords={profile?.latitude && profile?.longitude ? { lat: profile.latitude, lng: profile.longitude } : null}
-              />
-            </div>
-          )
+          <WorkersGroupedList
+            key={`services-${navTick}-${selectedCategory || 'all'}`}
+            workers={filteredWorkers}
+            variant="service"
+            onSelectWorker={handleSetSelectedWorker}
+            onPreviewImage={(src, alt) => handleSetPreviewImage({ src, alt })}
+          />
         ) : (
           <div className="text-center py-12 relative z-10">
             <div className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm inline-block">
@@ -721,7 +503,7 @@ export const UserDashboard: React.FC = () => {
         src={previewImage?.src || ''}
         alt={previewImage?.alt}
         isOpen={!!previewImage}
-        onClose={() => window.history.back()}
+        onClose={() => setPreviewImage(null)}
       />
     </div>
   </div>

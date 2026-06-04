@@ -6,8 +6,9 @@ import { useAuth } from '@/src/contexts/AuthContext';
 import { useLanguage } from '@/src/contexts/LanguageContext';
 import { AbstractGradientBackground } from '../Common/AbstractGradientBackground';
 import { ClipboardList, Clock, CheckCircle2, XCircle, Phone, MessageSquare, MapPin, AlertCircle, Calendar, Hammer } from 'lucide-react';
-import { cn, formatCurrency, formatDate, generateWhatsAppLink } from '@/src/lib/utils';
+import { FCMService } from '@/src/lib/fcmService';
 import { motion, AnimatePresence } from 'framer-motion';
+import { cn, formatCurrency, generateWhatsAppLink } from '@/src/lib/utils';
 
 import { useNavigate, useOutletContext } from 'react-router-dom';
 
@@ -15,12 +16,19 @@ export const JobRequest: React.FC = () => {
   const { profile } = useAuth();
   const { t, language, setLanguage } = useLanguage();
   const navigate = useNavigate();
-  const { setIsChatOpen, unreadMessagesCount } = useOutletContext<{ setIsChatOpen: (open: boolean) => void, unreadMessagesCount: number }>();
+  const outletContext = useOutletContext<{ setIsChatOpen: (open: boolean) => void, unreadMessagesCount: number }>() || { setIsChatOpen: () => {}, unreadMessagesCount: 0 };
+  const { setIsChatOpen, unreadMessagesCount } = outletContext;
   const [orders, setOrders] = useState<Order[]>([]);
   const [workerProfile, setWorkerProfile] = useState<WorkerProfile | null>(null);
   const [outdoorProfile, setOutdoorProfile] = useState<any | null>(null);
   const [shopProfile, setShopProfile] = useState<any | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loadingStates, setLoadingStates] = useState({
+    worker: true,
+    outdoor: true,
+    shop: true,
+    orders: true
+  });
+  const loading = loadingStates.worker || loadingStates.outdoor || loadingStates.shop || loadingStates.orders;
   const [activeTab, setActiveTab] = useState<'pending' | 'active' | 'completed' | 'declined'>('pending');
   const [activeCompletionOrder, setActiveCompletionOrder] = useState<Order | null>(null);
   const [receivedAmount, setReceivedAmount] = useState('');
@@ -35,78 +43,98 @@ export const JobRequest: React.FC = () => {
 
     // Fetch worker specific profile
     const workerRef = ref(db, `workers/${profile.uid}`);
-    onValue(workerRef, (snapshot) => {
+    const unsubWorker = onValue(workerRef, (snapshot) => {
       const data = snapshot.val();
       setWorkerProfile(data);
-      
-      // Auto-sync missing phone/email from user profile to worker profile
       if (data && (!data.phone || !data.email)) {
         update(workerRef, {
           phone: profile.phone || '',
           email: profile.email || ''
         }).catch(err => console.error("Failed to sync worker contact info:", err));
       }
+      setLoadingStates(prev => ({ ...prev, worker: false }));
     });
 
     // Fetch outdoor specific profile
     const outdoorRef = ref(db, `outdoor_profiles/${profile.uid}`);
-    onValue(outdoorRef, (snapshot) => {
+    const unsubOutdoor = onValue(outdoorRef, (snapshot) => {
       const data = snapshot.val();
       setOutdoorProfile(data);
-
       if (data && (!data.phone || !data.email)) {
         update(outdoorRef, {
           phone: profile.phone || '',
           email: profile.email || ''
         }).catch(err => console.error("Failed to sync outdoor contact info:", err));
       }
+      setLoadingStates(prev => ({ ...prev, outdoor: false }));
     });
 
     // Fetch shop specific profile
     const shopRef = ref(db, `shops/${profile.uid}`);
-    onValue(shopRef, (snapshot) => {
+    const unsubShop = onValue(shopRef, (snapshot) => {
       const data = snapshot.val();
       setShopProfile(data);
-
       if (data && (!data.phone || !data.email)) {
         update(shopRef, {
           phone: profile.phone || '',
           email: profile.email || ''
         }).catch(err => console.error("Failed to sync shop contact info:", err));
       }
+      setLoadingStates(prev => ({ ...prev, shop: false }));
     });
 
     const ordersRef = ref(db, 'orders');
-    
-    const unsubscribe = onValue(ordersRef, (snapshot) => {
+    const workerOrdersQuery = query(ordersRef, orderByChild('workerId'), equalTo(profile.uid));
+    const broadcastQuery = query(ordersRef, orderByChild('status'), equalTo('pending'));
+
+    let ownOrders: Order[] = [];
+    let broadcastOrders: Order[] = [];
+
+    const mergeAndSet = () => {
+      const broadcastFiltered = broadcastOrders.filter(o =>
+        o.workerId === 'broadcast' &&
+        Array.isArray((o as any).broadcastedTo) &&
+        (o as any).broadcastedTo.includes(profile.uid) &&
+        !ownOrders.find(own => own.id === o.id)
+      );
+      const merged = [...ownOrders, ...broadcastFiltered]
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      setOrders(merged);
+
+      const now = Date.now();
+      const overdue = ownOrders.some(order =>
+        order.status === 'completed' &&
+        !order.commissionPaid &&
+        order.feeDueDate &&
+        order.feeDueDate < now
+      );
+      setHasOverdueOrders(overdue);
+    };
+
+    const unsubscribe = onValue(workerOrdersQuery, (snapshot) => {
       const data = snapshot.val();
-      if (data) {
-        const allOrders = Object.entries(data).map(([key, value]) => ({
-          ...(value || {} as any),
-          id: key
-        })) as Order[];
-        // Filter by workerId
-        const workerOrders = allOrders.filter(order => order.workerId === profile.uid);
-        setOrders(workerOrders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
-
-        // Check for overdue platform fees (6 days grace period)
-        const now = Date.now();
-        const overdue = workerOrders.some(order => 
-          order.status === 'completed' && 
-          !order.commissionPaid && 
-          order.feeDueDate && 
-          order.feeDueDate < now
-        );
-
-        setHasOverdueOrders(overdue);
-      } else {
-        setOrders([]);
-        setHasOverdueOrders(false);
-      }
-      setLoading(false);
+      ownOrders = data
+        ? (Object.entries(data).map(([key, value]) => ({ ...(value || {} as any), id: key })) as Order[])
+        : [];
+      mergeAndSet();
+      setLoadingStates(prev => ({ ...prev, orders: false }));
     });
 
-    return () => unsubscribe();
+    const unsubBroadcast = onValue(broadcastQuery, (snapshot) => {
+      const data = snapshot.val();
+      broadcastOrders = data
+        ? (Object.entries(data).map(([key, value]) => ({ ...(value || {} as any), id: key })) as Order[])
+        : [];
+      mergeAndSet();
+    }, () => { broadcastOrders = []; });
+
+    return () => {
+      unsubWorker();
+      unsubOutdoor();
+      unsubShop();
+      unsubscribe();
+      unsubBroadcast();
+    };
   }, [profile]);
 
   // Watch for external status changes (e.g. user cancelling) while modal is open
@@ -133,6 +161,8 @@ export const JobRequest: React.FC = () => {
 
       if (newStatus === 'accepted') {
         updates[`orders/${orderId}/acceptedAt`] = Date.now();
+        updates[`orders/${orderId}/workerId`] = profile?.uid;
+        updates[`orders/${orderId}/workerName`] = workerProfile?.name || profile?.name || 'Worker';
       }
 
       if (newStatus === 'rejected') {
@@ -175,22 +205,53 @@ export const JobRequest: React.FC = () => {
         }
 
         try {
-          fetch('/api/notify', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              targetUid: order.userId,
+          const tokenSnap = await get(ref(db, `users/${order.userId}/fcmToken`));
+          const token = tokenSnap.val();
+          if (token) {
+            await FCMService.sendPushNotification(
+              token,
               title,
               body,
-              data: {
+              {
                 orderId,
-                path: '/orders', // open order history when tapped
+                path: newStatus === 'accepted' ? '/orders' : '/user/history',
                 type: 'booking_status'
               }
-            })
-          });
+            );
+          }
         } catch (err) {
-          console.error('Failed to send push notification', err);
+          console.error('Failed to send status push notification', err);
+        }
+
+        // Notify other broadcasted workers that the job is taken
+        if (newStatus === 'accepted' && order.broadcastedTo && Array.isArray(order.broadcastedTo)) {
+          try {
+            const otherWorkerUids = order.broadcastedTo.filter((uid: string) => uid !== profile?.uid);
+            
+            if (otherWorkerUids.length > 0) {
+              const workersRef = ref(db, 'workers');
+              const workersSnap = await get(workersRef);
+              const workersData = workersSnap.val() || {};
+              
+              const notificationTitle = t('Job Accepted');
+              const notificationBody = t('This job has been accepted by another driver.');
+              
+              await Promise.all(otherWorkerUids.map((uid: string) => {
+                const otherWorker = workersData[uid];
+                if (otherWorker && otherWorker.fcmToken) {
+                  return FCMService.sendPushNotification(
+                    otherWorker.fcmToken,
+                    notificationTitle,
+                    notificationBody,
+                    { orderId: order.id, path: '/worker', type: 'job_taken' }
+                  ).catch(err => console.error(`Failed to notify worker ${uid}`, err));
+                }
+                return Promise.resolve();
+              }));
+            }
+          } catch (err) {
+            console.error('Failed to notify other broadcasted workers', err);
+          }
         }
       }
     } catch (error) {
@@ -246,26 +307,24 @@ export const JobRequest: React.FC = () => {
       await update(ref(db), updates);
       
       // Trigger Push Notification to User
-      if (activeCompletionOrder.userId) {
         try {
-          fetch('/api/notify', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              targetUid: activeCompletionOrder.userId,
-              title: t('Job Completed'),
-              body: `${t('Your job with')} ${workerProfile?.name || t('the worker')} ${t('has been marked as completed.')}`,
-              data: {
+          const tokenSnap = await get(ref(db, `users/${activeCompletionOrder.userId}/fcmToken`));
+          const token = tokenSnap.val();
+          if (token) {
+            await FCMService.sendPushNotification(
+              token,
+              t('Job Completed'),
+              `${t('Your job with')} ${workerProfile?.name || t('the worker')} ${t('has been marked as completed.')}`,
+              {
                 orderId: activeCompletionOrder.id,
                 path: '/orders',
                 type: 'booking_completed'
               }
-            })
-          });
+            );
+          }
         } catch (err) {
-          console.error('Failed to send push notification', err);
+          console.error('Failed to send completion push notification', err);
         }
-      }
 
       setActiveCompletionOrder(null);
       setReceivedAmount('');
@@ -285,7 +344,7 @@ export const JobRequest: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="p-8 flex flex-col items-center justify-center min-h-full">
+      <div className="p-8 flex-1 flex flex-col items-center justify-center min-h-[70vh]">
         <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
       </div>
     );
@@ -297,7 +356,7 @@ export const JobRequest: React.FC = () => {
 
   if (!hasRegularProfile && !hasOutdoorProfile && !hasShopProfile) {
     return (
-      <div className="p-8 flex flex-col items-center justify-center min-h-full text-center">
+      <div className="p-8 flex-1 flex flex-col items-center justify-center min-h-[70vh] text-center">
         <div className="w-20 h-20 bg-blue-100 text-blue-600 rounded-3xl flex items-center justify-center mb-6">
           <AlertCircle size={40} />
         </div>
@@ -342,7 +401,7 @@ export const JobRequest: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col min-h-full">
+    <div className="flex-1 flex flex-col">
       <div className="bg-[#2d3446] px-6 pt-12 pb-10 rounded-b-[3rem] shadow-2xl relative overflow-hidden">
         {/* Low-poly geometric background elements */}
         <div className="absolute inset-0 opacity-20">
@@ -410,35 +469,27 @@ export const JobRequest: React.FC = () => {
           </div>
         </div>
 
-        {/* Availability & Language */}
-        <div className="flex items-center justify-between mb-8 relative z-10 px-2">
+        {/* Availability */}
+        <div className="flex items-center mb-8 relative z-10 px-2">
           <button
             onClick={toggleAvailability}
             className={cn(
               "flex items-center gap-2 px-4 py-2 rounded-full transition-all border border-white/10 backdrop-blur-md",
               workerProfile?.isAvailable ? "bg-emerald-500/10 text-emerald-400" : "bg-white/5 text-slate-400"
             )}
+            style={{
+              backgroundColor: workerProfile?.isAvailable ? 'rgba(16,185,129,0.15)' : 'rgba(255,255,255,0.05)',
+              color: workerProfile?.isAvailable ? '#34d399' : '#94a3b8'
+            }}
           >
-            <div className={cn("w-2 h-2 rounded-full", workerProfile?.isAvailable ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]" : "bg-slate-500")} />
+            <div
+              className={cn("w-2 h-2 rounded-full", workerProfile?.isAvailable ? "bg-emerald-400" : "bg-slate-500")}
+              style={{ backgroundColor: workerProfile?.isAvailable ? '#34d399' : '#64748b' }}
+            />
             <span className="text-[10px] font-black uppercase tracking-[0.2em]">
               {workerProfile?.isAvailable ? t('Available') : t('Busy')}
             </span>
           </button>
-
-          <div className="flex bg-white/5 p-1 rounded-full border border-white/10 backdrop-blur-md">
-            {(['en', 'ta'] as const).map(lang => (
-              <button
-                key={lang}
-                onClick={() => setLanguage(lang)}
-                className={cn(
-                  "px-4 py-1.5 text-[10px] font-black rounded-full transition-all",
-                  language === lang ? "bg-white text-[#0f172a] shadow-lg" : "text-white/30 hover:text-white"
-                )}
-              >
-                {lang === 'en' ? 'EN' : 'தமிழ்'}
-              </button>
-            ))}
-          </div>
         </div>
 
         {/* Tabs */}
@@ -499,17 +550,28 @@ export const JobRequest: React.FC = () => {
                       </a>
                     )}
                   </div>
-                  <div className="flex items-start gap-1 text-slate-500 text-xs mt-1">
-                    <MapPin size={12} className="text-slate-400 mt-0.5 flex-shrink-0" />
-                    <span className="leading-tight">
-                      {order.userAddress || t('No address provided')}
-                      {order.city && <>, {order.city}</>}
-                      {order.landmark && (
-                        <div className="text-[10px] text-slate-400 mt-0.5">
-                          <span className="font-semibold">{t('Landmark')}:</span> {order.landmark}
-                        </div>
-                      )}
-                    </span>
+                  <div className="flex flex-col gap-2 mt-2 w-full text-left">
+                    <div className="flex items-start gap-2">
+                      <MapPin size={12} className="text-slate-400 mt-0.5 shrink-0" />
+                      <div className="flex-1 min-w-0 flex flex-col items-start text-left">
+                        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">{t('Source')}</span>
+                        <p className="text-[11px] font-bold text-slate-700 leading-tight block break-words">{order.pickupPoint || t('No source provided')}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <MapPin size={12} className="text-slate-400 mt-0.5 shrink-0" />
+                      <div className="flex-1 min-w-0 flex flex-col items-start text-left">
+                        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">{t('Destination')}</span>
+                        <p className="text-[11px] font-bold text-slate-700 leading-tight block break-words">{order.workAddress || t('No destination provided')}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <MapPin size={12} className="text-slate-400 mt-0.5 shrink-0" />
+                      <div className="flex-1 min-w-0 flex flex-col items-start text-left">
+                        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">{t('Pickup Point')}</span>
+                        <p className="text-[11px] font-bold text-slate-700 leading-tight block break-words">{order.issue || t('No pickup details provided')}</p>
+                      </div>
+                    </div>
                   </div>
                 </div>
                 <div className="text-right">
@@ -555,14 +617,16 @@ export const JobRequest: React.FC = () => {
                   <>
                     <button 
                       onClick={() => handleStatusUpdate(order.id, 'rejected')}
-                      className="flex-1 py-3 rounded-xl border-2 border-slate-100 text-slate-500 text-[10px] font-bold active:bg-slate-50 leading-tight"
+                      className="flex-1 py-3 rounded-xl border-2 text-[10px] font-bold leading-tight"
+                      style={{ borderColor: '#e2e8f0', color: '#64748b', backgroundColor: 'transparent' }}
                     >
                       {t('Decline')}
                     </button>
                     <button 
                       onClick={() => handleStatusUpdate(order.id, 'accepted')}
                       disabled={hasOverdueOrders}
-                      className="flex-[2] btn-primary text-[10px] font-bold disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:border-slate-300 disabled:text-slate-500 leading-tight"
+                      className="flex-[2] btn-primary text-[10px] font-bold leading-tight"
+                      style={hasOverdueOrders ? { opacity: 0.5, cursor: 'not-allowed', backgroundColor: '#cbd5e1', borderColor: '#cbd5e1', color: '#64748b' } : {}}
                     >
                       {hasOverdueOrders ? t('Blocked (Overdue)') : t('Accept Job')}
                     </button>
@@ -575,7 +639,8 @@ export const JobRequest: React.FC = () => {
                         const link = generateWhatsAppLink('91' + order.userId, `Hi ${order.userName}, I've accepted your request for ${order.trade}. I'll be there at ${order.preferredTime}.`);
                         window.open(link, '_blank');
                       }}
-                      className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl border-2 border-green-100 text-green-600 text-[10px] font-bold active:bg-green-50 leading-tight"
+                      className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl border-2 text-[10px] font-bold leading-tight"
+                      style={{ borderColor: '#bbf7d0', color: '#16a34a', backgroundColor: 'transparent' }}
                     >
                       <MessageSquare size={14} />
                       <span>{t('Chat')}</span>
@@ -587,20 +652,27 @@ export const JobRequest: React.FC = () => {
                         setCommissionConfirmed(false);
                         setUpiClicked(false);
                       }}
-                      className="flex-[2] btn-primary bg-green-600 text-[10px] font-bold leading-tight"
+                      className="flex-[2] btn-primary text-[10px] font-bold leading-tight"
+                      style={{ backgroundColor: '#16a34a', borderColor: '#16a34a', color: '#ffffff' }}
                     >
                       {t('Mark Completed')}
                     </button>
                   </>
                 )}
                 {order.status?.toLowerCase() === 'completed' && (
-                  <div className="w-full py-3 bg-green-50 text-green-600 rounded-xl text-center text-[10px] font-bold flex items-center justify-center gap-2 px-2">
+                  <div
+                    className="w-full py-3 rounded-xl text-center text-[10px] font-bold flex items-center justify-center gap-2 px-2"
+                    style={{ backgroundColor: '#f0fdf4', color: '#16a34a' }}
+                  >
                     <CheckCircle2 size={14} className="shrink-0" />
                     <span className="leading-tight">{t('Job Completed Successfully')}</span>
                   </div>
                 )}
                 {order.status?.toLowerCase() === 'rejected' && (
-                  <div className="w-full py-3 bg-slate-50 text-slate-400 rounded-xl text-center text-[10px] font-bold leading-tight">
+                  <div
+                    className="w-full py-3 rounded-xl text-center text-[10px] font-bold leading-tight"
+                    style={{ backgroundColor: '#f8fafc', color: '#94a3b8' }}
+                  >
                     {t('Job Declined')}
                   </div>
                 )}
@@ -665,7 +737,8 @@ export const JobRequest: React.FC = () => {
 
                 <button
                   type="submit"
-                  className="btn-primary bg-green-600 w-full"
+                  className="btn-primary w-full"
+                  style={{ backgroundColor: '#16a34a', borderColor: '#16a34a', color: '#ffffff' }}
                 >
                   {t('Confirm Completion')}
                 </button>

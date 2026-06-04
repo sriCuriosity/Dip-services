@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ref, get } from 'firebase/database';
 import { db } from '@/src/lib/firebase';
-import { useNavigate } from 'react-router-dom';
+import { useLayoutOutlet } from '@/src/contexts/LayoutOutletContext';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { useLanguage } from '@/src/contexts/LanguageContext';
 import { AbstractGradientBackground } from '../Common/AbstractGradientBackground';
@@ -11,7 +11,7 @@ import { cn } from '@/src/lib/utils';
 import { FullScreenImage } from '../Common/FullScreenImage';
 
 export const MembersList: React.FC = () => {
-  const navigate = useNavigate();
+  const { navigateTo } = useLayoutOutlet();
   const { profile } = useAuth();
   const { t } = useLanguage();
   const [members, setMembers] = useState<any[]>([]);
@@ -94,7 +94,7 @@ export const MembersList: React.FC = () => {
 
         <div className="relative z-10">
           <button 
-            onClick={() => navigate('/profile')}
+            onClick={() => navigateTo('/profile')}
             className="absolute -top-2 -right-2 w-10 h-10 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center text-white backdrop-blur-md border border-white/20 transition-all z-20"
           >
             <X size={20} />

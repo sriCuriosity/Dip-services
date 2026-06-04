@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ref, onValue } from 'firebase/database';
 import { db } from '@/src/lib/firebase';
-import { useNavigate } from 'react-router-dom';
+import { useLayoutOutlet } from '@/src/contexts/LayoutOutletContext';
 import { Building2, Search, MapPin, X } from 'lucide-react';
 import { FullScreenImage } from '../Common/FullScreenImage';
 import { useLanguage } from '@/src/contexts/LanguageContext';
@@ -31,7 +31,7 @@ interface ShopProfile {
 }
 
 export const ShopList: React.FC = () => {
-  const navigate = useNavigate();
+  const { navigateTo } = useLayoutOutlet();
   const { t } = useLanguage();
   const [shops, setShops] = useState<ShopProfile[]>([]);
   const [filteredShops, setFilteredShops] = useState<ShopProfile[]>([]);
@@ -145,7 +145,7 @@ export const ShopList: React.FC = () => {
 
         <div className="relative z-10">
           <button 
-            onClick={() => navigate('/profile')}
+            onClick={() => navigateTo('/profile')}
             className="absolute -top-2 -right-2 w-10 h-10 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center text-white backdrop-blur-md border border-white/20 transition-all z-20"
           >
             <X size={20} />

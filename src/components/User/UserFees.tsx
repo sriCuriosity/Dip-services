@@ -8,12 +8,12 @@ import { AbstractGradientBackground } from '../Common/AbstractGradientBackground
 import { Wallet, AlertCircle, Clock, History, CreditCard, ArrowLeft, ShieldAlert, ShieldCheck, XCircle, CheckCircle2 } from 'lucide-react';
 import { formatCurrency, formatDate, cn } from '@/src/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useNavigate } from 'react-router-dom';
+import { useLayoutOutlet } from '@/src/contexts/LayoutOutletContext';
 
 export const UserFees: React.FC = () => {
   const { profile } = useAuth();
   const { t, language } = useLanguage();
-  const navigate = useNavigate();
+  const { navigateTo } = useLayoutOutlet();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [upiClicked, setUpiClicked] = useState(false);
@@ -129,7 +129,7 @@ export const UserFees: React.FC = () => {
         
         <div className="relative z-10">
           <button 
-            onClick={() => navigate('/profile')}
+            onClick={() => navigateTo('/profile')}
             className="mb-4 w-10 h-10 bg-white/10 rounded-full flex items-center justify-center text-white backdrop-blur-md border border-white/20"
           >
             <ArrowLeft size={20} />
